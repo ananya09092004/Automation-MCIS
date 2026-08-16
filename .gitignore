@@ -1,0 +1,14 @@
+﻿.env
+.env.local
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.wav
+.DS_Store
+
+dist/
+model/
+*.zip
+*.exe
