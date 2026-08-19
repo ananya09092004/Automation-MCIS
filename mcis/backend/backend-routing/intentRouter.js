@@ -55,6 +55,16 @@ If "action", classify further into one of two shapes:
    (e.g. "email likh do", "draft an email to...", "compose an email"). The single word "email" by
    itself, with no verb, should default to opening it (NEXUS "navigate" to gmail.com), not drafting.
 
+   DICTATION into Notepad/Word/any text editor (e.g. "notepad khol do", "ye likh: <text>", "ab
+   yeh likh do <text>", "iske baad ye likh <text>"): the CONTENT to type is whatever the user
+   literally said after the "likh"/"type"/"write" cue — copy it VERBATIM into payload.value. Do
+   NOT paraphrase it, shorten it, or invent/expand it into a fuller paragraph. The user is
+   dictating exact content one command at a time; your only job is to route it as a "type_text"
+   action with target: { "role": "editor" } and value = exactly what they said to write. If a
+   single message contains several dictated lines back to back (e.g. "ye likh hello phir yeh likh
+   world phir ye likh done"), join them with "\n" between each line, in the same order, still
+   verbatim — don't reword any of them.
+
    Valid nexus actions: ${NEXUS_ACTIONS.join(', ')}
 
    Payload shape for nexus actions:

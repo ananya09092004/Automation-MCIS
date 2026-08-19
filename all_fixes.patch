@@ -1,0 +1,1173 @@
+diff --git a/mcis/backend/backend-routing/commandRoute.js b/mcis/backend/backend-routing/commandRoute.js
+index 34c6a4e..3e702da 100644
+--- a/mcis/backend/backend-routing/commandRoute.js
++++ b/mcis/backend/backend-routing/commandRoute.js
+@@ -21,6 +21,37 @@ const HIGH_RISK_ACTIONS = [
+   'write_file', 'run_terminal', 'kill_process', 'close_app', 'close_window', 'login',
+ ];
+ 
++// Tracks each user's most recent *successful* type_text call so consecutive
++// dictation commands ("ye likh: X" ... then later "ab yeh likh: Y") land on
++// a new line instead of gluing onto the previous text — type_text itself
++// just types at the current cursor position (see nexus/desktop/keyboard),
++// it has no concept of "this is a fresh line of dictation" on its own.
++// Cleared automatically if the user switches app/target or goes quiet for
++// a while, so it never bleeds into an unrelated later typing action.
++const DICTATION_CONTINUITY_MS = 5 * 60 * 1000;
++const lastDictation = new Map(); // userId -> { app, target, at }
++
++function dictationTargetKey(payload) {
++  const app = payload?.parameters?.app || payload?.platform || '';
++  const target = JSON.stringify(payload?.target || {});
++  return `${app}::${target}`;
++}
++
++function shouldPrefixNewline(userId, payload) {
++  const prev = lastDictation.get(userId);
++  if (!prev) return false;
++  if (Date.now() - prev.at > DICTATION_CONTINUITY_MS) return false;
++  return prev.key === dictationTargetKey(payload);
++}
++
++function recordDictation(userId, payload) {
++  lastDictation.set(userId, { key: dictationTargetKey(payload), at: Date.now() });
++}
++
++function forgetDictation(userId) {
++  lastDictation.delete(userId);
++}
++
+ const AI_TASK_HANDLERS = {
+   draftEmail: aiTasks.draftEmail,
+   customizeResume: aiTasks.customizeResume,
+@@ -97,11 +128,14 @@ router.post('/', async (req, res) => {
+   }
+ 
+   // --- Multi-step goal (task planner) ---
++  // Runs in the background so this HTTP request returns immediately instead
++  // of blocking for the whole goal (which can take up to MAX_STEPS * up to
++  // ~30s per step). The client polls GET /api/command/goal/:planId/status.
+   if (intent.action === 'run_goal') {
+     try {
+-      const result = await taskPlanner.startPlan(userId, intent.payload.goal);
+-      await logAction(userId, 'run_goal', intent.payload, result);
+-      return res.json(result);
++      const started = taskPlanner.startPlanAsync(userId, intent.payload.goal);
++      await logAction(userId, 'run_goal', intent.payload, started);
++      return res.json(started);
+     } catch (err) {
+       return res.status(500).json({ type: 'plan_error', error: err.message });
+     }
+@@ -139,6 +173,21 @@ router.post('/', async (req, res) => {
+     }
+ 
+     try {
++      // If this is another type_text into the SAME app/target as the user's
++      // last dictation (within the last few minutes), prefix a newline so
++      // it lands as a new line instead of gluing onto the previous text.
++      if (intent.action === 'type_text' && shouldPrefixNewline(userId, intent.payload)) {
++        const currentValue = intent.payload.value ?? '';
++        if (!currentValue.startsWith('\n')) {
++          intent.payload = { ...intent.payload, value: '\n' + currentValue };
++        }
++      } else if (intent.action === 'type_text') {
++        // Fresh dictation target — nothing to prefix, just start tracking it.
++      } else if (intent.action === 'open_app' || intent.action === 'navigate') {
++        // Switching context resets dictation continuity for this user.
++        forgetDictation(userId);
++      }
++
+       const result = await sendCommandToNexus({
+         platform: intent.payload.platform || 'desktop',
+         action: intent.action,
+@@ -147,6 +196,9 @@ router.post('/', async (req, res) => {
+         value: intent.payload.value || null,
+         approval_token: intent.payload.approval_token || null
+       });
++      if (intent.action === 'type_text' && result.success) {
++        recordDictation(userId, intent.payload);
++      }
+       await logAction(userId, intent.action, intent.payload, result);
+       await appendAuditLog(userId, intent.action, intent.payload, result);
+       return res.json({ type: 'nexus_action', action: intent.action, result });
+@@ -190,4 +242,24 @@ router.post('/', async (req, res) => {
+   }
+ });
+ 
++// --- Goal status polling (for the background run_goal above) ---
++router.get('/goal/:planId/status', (req, res) => {
++  const status = taskPlanner.getPlanStatus(req.params.planId);
++  if (status.type === 'plan_error' && !status.status) {
++    return res.status(404).json(status);
++  }
++  res.json(status);
++});
++
++// --- Answer a mid-goal clarifying question ("kaunsa restaurant?" etc) ---
++router.post('/goal/:planId/answer', async (req, res) => {
++  const { answer } = req.body;
++  if (!answer) {
++    return res.status(400).json({ error: 'answer required' });
++  }
++  const result = taskPlanner.submitClarification(req.params.planId, answer);
++  await logAction(req.body.userId || 'test-user-123', 'goal_clarification_answer', { planId: req.params.planId, answer }, result);
++  res.json(result);
++});
++
+ module.exports = router;
+\ No newline at end of file
+diff --git a/mcis/backend/backend-routing/intentRouter.js b/mcis/backend/backend-routing/intentRouter.js
+index b0a8616..0a70954 100644
+--- a/mcis/backend/backend-routing/intentRouter.js
++++ b/mcis/backend/backend-routing/intentRouter.js
+@@ -55,6 +55,16 @@ If "action", classify further into one of two shapes:
+    (e.g. "email likh do", "draft an email to...", "compose an email"). The single word "email" by
+    itself, with no verb, should default to opening it (NEXUS "navigate" to gmail.com), not drafting.
+ 
++   DICTATION into Notepad/Word/any text editor (e.g. "notepad khol do", "ye likh: <text>", "ab
++   yeh likh do <text>", "iske baad ye likh <text>"): the CONTENT to type is whatever the user
++   literally said after the "likh"/"type"/"write" cue — copy it VERBATIM into payload.value. Do
++   NOT paraphrase it, shorten it, or invent/expand it into a fuller paragraph. The user is
++   dictating exact content one command at a time; your only job is to route it as a "type_text"
++   action with target: { "role": "editor" } and value = exactly what they said to write. If a
++   single message contains several dictated lines back to back (e.g. "ye likh hello phir yeh likh
++   world phir ye likh done"), join them with "\n" between each line, in the same order, still
++   verbatim — don't reword any of them.
++
+    Valid nexus actions: ${NEXUS_ACTIONS.join(', ')}
+ 
+    Payload shape for nexus actions:
+diff --git a/mcis/backend/backend-routing/taskPlanner.js b/mcis/backend/backend-routing/taskPlanner.js
+index 5201194..062c388 100644
+--- a/mcis/backend/backend-routing/taskPlanner.js
++++ b/mcis/backend/backend-routing/taskPlanner.js
+@@ -14,10 +14,32 @@ const MAX_DATA_CHARS = 2500;
+ const plans = new Map();
+ let emergencyStopActive = false;
+ 
++// How long a finished plan (completed/error/stopped) stays queryable via
++// getPlanStatus() before being garbage-collected from memory.
++const FINISHED_PLAN_TTL_MS = 15 * 60 * 1000;
++
+ function makePlanId() {
+   return 'plan_' + Math.random().toString(36).slice(2, 10);
+ }
+ 
++function scheduleCleanup(planId) {
++  setTimeout(() => plans.delete(planId), FINISHED_PLAN_TTL_MS).unref?.();
++}
++
++// Snapshot of a plan safe to send to clients (no internal-only fields).
++function snapshot(plan) {
++  if (!plan) return null;
++  return {
++    planId: plan.planId,
++    goal: plan.goal,
++    status: plan.status, // running | paused | awaiting_clarification | completed | error | stopped
++    steps: plan.history,
++    pendingStep: plan.pendingStep || null,
++    pendingQuestion: plan.pendingQuestion || null,
++    result: plan.result || null,
++  };
++}
++
+ function isSensitiveStep(step) {
+   const actionText = String(step.action || '').toLowerCase();
+   const valuesText = JSON.stringify(step.payload || {}).toLowerCase();
+@@ -59,18 +81,25 @@ function truncate(value) {
+   return text.length > MAX_DATA_CHARS ? text.slice(0, MAX_DATA_CHARS) + '...(truncated)' : text;
+ }
+ 
+-async function decideNextStep(goal, history) {
++async function decideNextStep(goal, history, clarifications = []) {
+   const historyText = history.map((h, i) => {
+     const evidence = h.evidence ? ` | verified: ${h.evidence.verified}` : '';
+     const dataPreview = h.data ? `\n   page/data seen: ${truncate(h.data)}` : '';
+     return `${i + 1}. ${h.action} -> ${h.success ? 'success' : 'failed: ' + h.error}${evidence}${dataPreview}`;
+   }).join('\n') || '(none yet)';
+ 
++  const clarificationsText = clarifications.length
++    ? clarifications.map((c, i) => `Q${i + 1}: ${c.question}\nA${i + 1}: ${c.answer}`).join('\n')
++    : '(none)';
++
+   const prompt = `You are Nexus's autonomous task planner. The user's goal: "${goal}"
+ 
+ Steps executed so far:
+ ${historyText}
+ 
++Clarifications already asked and answered by the user (use these, don't ask again):
++${clarificationsText}
++
+ Valid nexus actions: ${NEXUS_ACTIONS.join(', ')}
+ 
+ Parameter key names Nexus expects (use these exact keys):
+@@ -95,9 +124,32 @@ INSPECT ONLY WHEN NEEDED — keep this system fast:
+   click — adjust or stop and report it.
+ - Default to acting directly without inspecting whenever the action doesn't require picking a
+   specific on-page element.
++
++WRITING CONTENT INTO AN APP (e.g. "notepad kholo aur ek paragraph likh do", "open notepad and
++write a paragraph about X"):
++- This is a TWO-step pattern: (1) open_app to launch the app (e.g. "Notepad"), (2) type_text
++  with the content as the "value" field, target: { "role": "editor" }.
++- PRIORITY: if the user already dictated/gave the actual text to type (anywhere in the goal
++  text, e.g. "notepad khol aur yeh likh: <text>"), copy it into payload.value VERBATIM — do not
++  paraphrase, shorten, or rewrite it. The user's own words always win.
++- Only if the goal gives a topic but NO literal text to type (e.g. "notepad khol aur ek
++  paragraph likh do <topic> pe", with no dictated sentences) should you compose the paragraph
++  yourself, in the language the user asked in, on-topic, 4-6 sentences.
++- If the goal gives neither literal text NOR a topic (e.g. just "notepad khol aur likh do" with
++  nothing else) — this is exactly the case to use needs_clarification (below) and ask what to
++  write, rather than inventing content out of nothing.
++
++ASKING THE USER FOR MORE INFO (mid-goal clarification):
++- If you cannot make progress because a REQUIRED piece of information is missing and cannot be
++  inferred (e.g. "book a table" with no restaurant name, "email X" with no recipient) — do NOT
++  guess and do NOT invent an action. Instead respond with:
++  { "done": false, "needs_clarification": true, "question": "<short question in the user's language>", "action": null }
++- Only do this when truly stuck — prefer making a reasonable assumption and proceeding whenever
++  possible, since pausing costs the user time.
++
+ Decide the SINGLE next action to make progress toward the goal, or declare the goal complete.
+ Respond ONLY with JSON, no markdown:
+-{ "done": true|false, "action": "<nexus action name or null>", "payload": { "platform": "desktop"|"browser", "parameters": {}, "target": {}, "value": null }, "reason": "<short reason>" }`;
++{ "done": true|false, "needs_clarification": false, "question": null, "action": "<nexus action name or null>", "payload": { "platform": "desktop"|"browser", "parameters": {}, "target": {}, "value": null }, "reason": "<short reason>" }`;
+ 
+   let result;
+   try {
+@@ -119,20 +171,39 @@ async function runLoop(plan) {
+   while (plan.history.length < MAX_STEPS) {
+ 
+     if (emergencyStopActive) {
+-      plans.delete(plan.planId);
+-      return { type: 'plan_error', message: 'Emergency stop activate hai — koi automation nahi chalega.' };
++      plan.status = 'error';
++      plan.result = { type: 'plan_error', message: 'Emergency stop activate hai — koi automation nahi chalega.' };
++      scheduleCleanup(plan.planId);
++      return plan.result;
+     }
+ 
+-    const next = await decideNextStep(plan.goal, plan.history);
++    const next = await decideNextStep(plan.goal, plan.history, plan.clarifications);
++
++    if (next.needs_clarification) {
++      plan.status = 'awaiting_clarification';
++      plan.pendingQuestion = next.question || 'Thoda aur detail de sakte ho?';
++      plan.result = null;
++      // Do NOT delete/cleanup — plan stays alive waiting for submitClarification().
++      return {
++        type: 'plan_awaiting_clarification',
++        planId: plan.planId,
++        message: plan.pendingQuestion,
++        resource: `plan:${plan.planId}`,
++      };
++    }
+ 
+     if (next.done) {
+-      plans.delete(plan.planId);
+-      return { type: 'plan_complete', message: next.reason || 'Goal achieved.', steps: plan.history };
++      plan.status = 'completed';
++      plan.result = { type: 'plan_complete', message: next.reason || 'Goal achieved.', steps: plan.history };
++      scheduleCleanup(plan.planId);
++      return plan.result;
+     }
+ 
+     if (!next.action || !NEXUS_ACTIONS.includes(next.action)) {
+-      plans.delete(plan.planId);
+-      return { type: 'plan_error', message: 'Planner produced an invalid step.' };
++      plan.status = 'error';
++      plan.result = { type: 'plan_error', message: 'Planner produced an invalid step.' };
++      scheduleCleanup(plan.planId);
++      return plan.result;
+     }
+ 
+     if (isSensitiveStep(next)) {
+@@ -163,22 +234,32 @@ async function runLoop(plan) {
+     });
+ 
+     if (!result.success) {
+-      plans.delete(plan.planId);
+-      return { type: 'plan_error', message: `Step "${next.action}" failed even after retry: ${result.error}`, steps: plan.history };
++      plan.status = 'error';
++      plan.result = { type: 'plan_error', message: `Step "${next.action}" failed even after retry: ${result.error}`, steps: plan.history };
++      scheduleCleanup(plan.planId);
++      return plan.result;
+     }
+   }
+ 
+-  plans.delete(plan.planId);
+-  return { type: 'plan_stopped', message: 'Max steps tak pahunch gaye, goal complete nahi hua.', steps: plan.history };
++  plan.status = 'stopped';
++  plan.result = { type: 'plan_stopped', message: 'Max steps tak pahunch gaye, goal complete nahi hua.', steps: plan.history };
++  scheduleCleanup(plan.planId);
++  return plan.result;
+ }
+ 
++function newPlan(userId, goal) {
++  const planId = makePlanId();
++  const plan = { planId, userId, goal, history: [], clarifications: [], status: 'running', pendingStep: null, pendingQuestion: null, result: null };
++  plans.set(planId, plan);
++  return plan;
++}
++
++// --- Synchronous (blocking) API — kept for any existing callers. ---
+ async function startPlan(userId, goal) {
+   if (emergencyStopActive) {
+     return { type: 'plan_error', message: 'Emergency stop activate hai — pehle resume karo.' };
+   }
+-  const planId = makePlanId();
+-  const plan = { planId, userId, goal, history: [], status: 'running' };
+-  plans.set(planId, plan);
++  const plan = newPlan(userId, goal);
+   return runLoop(plan);
+ }
+ 
+@@ -191,7 +272,86 @@ async function resumePlan(planId) {
+     return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+   }
+   plan.status = 'running';
++  plan.pendingStep = null;
+   return runLoop(plan);
+ }
+ 
+-module.exports = { startPlan, resumePlan, triggerEmergencyStop, clearEmergencyStop };
+\ No newline at end of file
++// --- Background (non-blocking) API — use these for goal execution so the
++// HTTP request returns immediately; the caller polls getPlanStatus(planId). ---
++function startPlanAsync(userId, goal) {
++  if (emergencyStopActive) {
++    return { type: 'plan_error', message: 'Emergency stop activate hai — pehle resume karo.' };
++  }
++  const plan = newPlan(userId, goal);
++  // Fire and forget — errors are captured onto the plan itself so polling
++  // always has something sensible to report, never an unhandled rejection.
++  runLoop(plan).catch(err => {
++    plan.status = 'error';
++    plan.result = { type: 'plan_error', message: err.message };
++    scheduleCleanup(plan.planId);
++  });
++  return { type: 'plan_started', planId: plan.planId, status: 'running' };
++}
++
++function resumePlanAsync(planId) {
++  if (emergencyStopActive) {
++    return { type: 'plan_error', message: 'Emergency stop activate hai.' };
++  }
++  const plan = plans.get(planId);
++  if (!plan) {
++    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
++  }
++  plan.status = 'running';
++  plan.pendingStep = null;
++  runLoop(plan).catch(err => {
++    plan.status = 'error';
++    plan.result = { type: 'plan_error', message: err.message };
++    scheduleCleanup(plan.planId);
++  });
++  return { type: 'plan_started', planId: plan.planId, status: 'running' };
++}
++
++// Answer a mid-goal clarifying question and resume execution in the background.
++function submitClarification(planId, answer) {
++  const plan = plans.get(planId);
++  if (!plan) {
++    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
++  }
++  if (plan.status !== 'awaiting_clarification') {
++    return { type: 'plan_error', message: 'Ye plan clarification ka wait nahi kar raha.' };
++  }
++  plan.clarifications.push({ question: plan.pendingQuestion, answer });
++  plan.pendingQuestion = null;
++  plan.status = 'running';
++  runLoop(plan).catch(err => {
++    plan.status = 'error';
++    plan.result = { type: 'plan_error', message: err.message };
++    scheduleCleanup(plan.planId);
++  });
++  return { type: 'plan_started', planId: plan.planId, status: 'running' };
++}
++
++function getPlanStatus(planId) {
++  const plan = plans.get(planId);
++  if (!plan) {
++    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
++  }
++  return snapshot(plan);
++}
++
++module.exports = {
++  startPlan,
++  resumePlan,
++  startPlanAsync,
++  resumePlanAsync,
++  submitClarification,
++  getPlanStatus,
++  triggerEmergencyStop,
++  clearEmergencyStop,
++  // Exported so other orchestration experiments (e.g. hybridOrchestrator's
++  // teaching mode) can reuse the same step-decision/execution primitives
++  // instead of re-implementing (and re-diverging from) this logic.
++  decideNextStep,
++  isSensitiveStep,
++  callNexusWithTimeout,
++};
+\ No newline at end of file
+diff --git a/mcis/backend/routes/hybrid.js b/mcis/backend/routes/hybrid.js
+index 6a132fc..fad0b02 100644
+--- a/mcis/backend/routes/hybrid.js
++++ b/mcis/backend/routes/hybrid.js
+@@ -1,60 +1,75 @@
+ // backend/routes/hybrid.js
++//
++// Was broken: `router` was used with no `express`/`express.Router()`
++// import anywhere in the file (ReferenceError on load), and it called
++// `orchestrator.executeGoal(...)` — a shared module.exports singleton —
++// as if it synchronously returned an EventEmitter, with no 'error'
++// listener wired up. Fixed below: real router, a fresh orchestrator
++// instance per request (see hybridOrchestrator.js for why), and an
++// 'error' listener so failures reach the client instead of hanging the
++// SSE stream open forever.
++
++const express = require('express');
++const router = express.Router();
++const HybridOrchestrator = require('../services/hybridOrchestrator');
+ 
+ router.post('/:userId/execute-goal', async (req, res) => {
+-  try {
+-    const { userId } = req.params;
+-    const { goal } = req.body;
+-
+-    // Stream response in real-time
+-    res.setHeader('Content-Type', 'text/event-stream');
+-    res.setHeader('Cache-Control', 'no-cache');
+-    res.setHeader('Connection', 'keep-alive');
+-
+-    // === EXECUTE WITH TEACHING ===
+-    const orchestrator = require('../services/hybridOrchestrator');
+-    
+-    const stream = orchestrator.executeGoal(userId, goal);
+-
+-    stream.on('step-complete', (data) => {
+-      res.write(`data: ${JSON.stringify({
+-        type: 'step-complete',
+-        step: data.step,
+-        output: data.output
+-      })}\n\n`);
+-    });
++  const { userId } = req.params;
++  const { goal } = req.body;
+ 
+-    stream.on('teaching-moment', (data) => {
+-      res.write(`data: ${JSON.stringify({
+-        type: 'teaching',
+-        whatHappened: data.whatHappened,
+-        whyThisApproach: data.whyThisApproach,
+-        patternToRemember: data.patternToRemember,
+-        challenge: data.challenge
+-      })}\n\n`);
+-    });
++  if (!goal) {
++    return res.status(400).json({ error: 'goal required' });
++  }
++
++  // Stream response in real-time
++  res.setHeader('Content-Type', 'text/event-stream');
++  res.setHeader('Cache-Control', 'no-cache');
++  res.setHeader('Connection', 'keep-alive');
++  res.flushHeaders?.();
++
++  const orchestrator = new HybridOrchestrator();
++
++  const send = (type, payload) => {
++    res.write(`data: ${JSON.stringify({ type, ...payload })}\n\n`);
++  };
+ 
+-    stream.on('growth-update', (data) => {
+-      res.write(`data: ${JSON.stringify({
+-        type: 'growth',
+-        skillsGained: data.skillsGained,
+-        levelBefore: data.levelBefore,
+-        levelAfter: data.levelAfter
+-      })}\n\n`);
++  orchestrator.on('step-complete', (data) => {
++    send('step-complete', { step: data.step, output: data.output });
++  });
++
++  orchestrator.on('teaching-moment', (data) => {
++    send('teaching', {
++      whatHappened: data.whatHappened,
++      whyThisApproach: data.whyThisApproach,
++      patternToRemember: data.patternToRemember,
++      challenge: data.challenge,
+     });
++  });
+ 
+-    stream.on('complete', (data) => {
+-      res.write(`data: ${JSON.stringify({
+-        type: 'complete',
+-        result: data,
+-        nextChallenge: data.nextChallenge
+-      })}\n\n`);
+-      res.end();
++  orchestrator.on('growth-update', (data) => {
++    send('growth', {
++      skillsGained: data.skillsGained,
++      levelBefore: data.levelBefore,
++      levelAfter: data.levelAfter,
+     });
++  });
+ 
+-  } catch (err) {
+-    res.write(`data: ${JSON.stringify({ error: err.message })}\n\n`);
++  orchestrator.on('complete', (data) => {
++    send('complete', { result: data, nextChallenge: data.nextChallenge });
+     res.end();
+-  }
++  });
++
++  orchestrator.on('error', (data) => {
++    send('error', { error: data.message || 'Unknown error' });
++    res.end();
++  });
++
++  // Client disconnected early — stop listening, nothing left to write to.
++  req.on('close', () => {
++    orchestrator.removeAllListeners();
++  });
++
++  orchestrator.executeGoal(userId, goal);
+ });
+ 
+-module.exports = router;
+\ No newline at end of file
++module.exports = router;
+diff --git a/mcis/backend/routes/permissions.js b/mcis/backend/routes/permissions.js
+index 7ff7995..eca92b9 100644
+--- a/mcis/backend/routes/permissions.js
++++ b/mcis/backend/routes/permissions.js
+@@ -1,7 +1,7 @@
+ const express = require('express');
+ const router = express.Router();
+ const { grantPermission } = require('../security-engine/permissions');
+-const { resumePlan } = require('../backend-routing/taskPlanner');
++const { resumePlanAsync } = require('../backend-routing/taskPlanner');
+ 
+ router.post('/grant', async (req, res) => {
+   const userId = 'test-user-123';
+@@ -14,7 +14,9 @@ router.post('/grant', async (req, res) => {
+   try {
+     if (resource.startsWith('plan:')) {
+       const planId = resource.replace('plan:', '');
+-      const result = await resumePlan(planId);
++      // Non-blocking: returns immediately, client polls
++      // GET /api/command/goal/:planId/status for progress/completion.
++      const result = resumePlanAsync(planId);
+       return res.json(result);
+     }
+ 
+diff --git a/mcis/backend/server.js b/mcis/backend/server.js
+index 9e117e7..26572be 100644
+--- a/mcis/backend/server.js
++++ b/mcis/backend/server.js
+@@ -39,6 +39,9 @@ const deviceRoute = require('./routes/device');
+ const devicePairing = require('./backend-addon/devicePairing');
+ const permissionsRoute = require('./routes/permissions');
+ const emergencyStopRoute = require('./routes/emergencyStop');
++// Was never mounted anywhere, even though hybridOrchestrator.js and this
++// route both existed in the repo — /:userId/execute-goal was unreachable.
++const hybridRoute = require('./routes/hybrid');
+ // ================================
+ // Middleware
+ // ================================
+@@ -147,6 +150,7 @@ try {
+   app.use('/api/multifile', multifileRoutes);
+   app.use('/api/command', commandRoute);
+   app.use('/api/permissions', permissionsRoute);
++  app.use('/api/hybrid', hybridRoute);
+   app.use('/api/device', deviceRoute);
+   app.use('/api/device', devicePairing);
+   app.use('/api/emergency', emergencyStopRoute);
+diff --git a/mcis/backend/services/explanationGenerator.js b/mcis/backend/services/explanationGenerator.js
+index b51e30f..5c11cf3 100644
+--- a/mcis/backend/services/explanationGenerator.js
++++ b/mcis/backend/services/explanationGenerator.js
+@@ -1,4 +1,27 @@
+ // backend/services/explanationGenerator.js
++//
++// NOTE: this previously called `claude.messages.create(...)` with no
++// `claude` client ever required/defined anywhere in the project (there's
++// no Anthropic SDK dependency in package.json — the rest of the codebase
++// uses Groq/Gemini). Any call would throw "claude is not defined". Rewired
++// to use the Groq client that's already a project dependency and already
++// used elsewhere (see goals.js, plannerService.js) so this actually runs
++// without adding a new API key requirement.
++
++const Groq = require('groq-sdk');
++const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
++
++async function askGroq(prompt, maxTokens = 300) {
++  const completion = await groq.chat.completions.create({
++    model: 'qwen/qwen3.6-27b',
++    messages: [{ role: 'user', content: prompt }],
++    max_tokens: maxTokens,
++    temperature: 0.4,
++  });
++  return (completion.choices[0].message.content || '')
++    .replace(/<think>[\s\S]*?<\/think>/gi, '')
++    .trim();
++}
+ 
+ class ExplanationGenerator {
+   async explain(step) {
+@@ -26,46 +49,28 @@ class ExplanationGenerator {
+   }
+ 
+   async generateReasoning(code, pattern) {
+-    // Use Claude to explain the WHY
+-    const explanation = await claude.messages.create({
+-      model: "claude-opus-4-6",
+-      messages: [{
+-        role: "user",
+-        content: `
+-          Code: ${code}
+-          Pattern: ${pattern}
+-          
+-          Explain in 2-3 sentences:
+-          1. Why is this approach used?
+-          2. What problem does it solve?
+-          3. When should you use this?
+-        `
+-      }]
+-    });
+-    
+-    return explanation.content[0].text;
++    return askGroq(`
++      Code/step: ${code}
++      Pattern: ${pattern}
++
++      Explain in 2-3 sentences:
++      1. Why is this approach used?
++      2. What problem does it solve?
++      3. When should you use this?
++    `);
+   }
+ 
+   async explainAlternatives(code, pattern) {
+-    // Why NOT use other approaches?
+-    const explanation = await claude.messages.create({
+-      model: "claude-opus-4-6",
+-      messages: [{
+-        role: "user",
+-        content: `
+-          Current approach: ${pattern}
+-          
+-          List 2-3 alternative approaches that COULD work but aren't used here.
+-          For each, explain WHY we chose ${pattern} instead.
+-          
+-          Format:
+-          Alternative 1: [approach]
+-          Why not: [reason]
+-        `
+-      }]
+-    });
+-    
+-    return explanation.content[0].text;
++    return askGroq(`
++      Current approach: ${pattern}
++
++      List 2-3 alternative approaches that COULD work but aren't used here.
++      For each, explain WHY we chose ${pattern} instead.
++
++      Format:
++      Alternative 1: [approach]
++      Why not: [reason]
++    `);
+   }
+ 
+   async identifyUseCases(pattern) {
+diff --git a/mcis/backend/services/hybridOrchestrator.js b/mcis/backend/services/hybridOrchestrator.js
+index b294baf..8f1b782 100644
+--- a/mcis/backend/services/hybridOrchestrator.js
++++ b/mcis/backend/services/hybridOrchestrator.js
+@@ -1,127 +1,201 @@
+ // backend/services/hybridOrchestrator.js
++//
++// "Teaching mode" goal executor: like taskPlanner's autonomous run_goal,
++// but streams step-by-step progress and (in LEARN/HYBRID mode) short
++// explanations of *why* each step was taken, via EventEmitter so
++// routes/hybrid.js can pipe it straight into an SSE response.
++//
++// This file was previously broken dead code: modeSelector, planGenerator,
++// explanationGenerator, variantGenerator, learningProgress, currentLevel
++// and currentDifficulty were all referenced but never required/defined —
++// hitting POST /:userId/execute-goal threw a ReferenceError immediately.
++// Rewritten below to:
++//   - actually require its dependencies
++//   - reuse taskPlanner's step-decision/execution primitives instead of
++//     a non-existent planGenerator (there's no "generate the whole plan
++//     up front" component anywhere in this codebase — steps are decided
++//     one at a time, same as the regular autonomous goal runner)
++//   - be an EventEmitter, since routes/hybrid.js calls .on(...) on the
++//     return value of executeGoal()
++//   - track per-user skill level in a small in-memory store instead of
++//     referencing undefined globals (currentLevel/currentDifficulty)
+ 
+-class HybridOrchestrator {
+-  async executeGoal(userId, goal) {
+-    // 1. Select mode
+-    const mode = await modeSelector.selectMode(userId, goal);
+-    
+-    // 2. Create execution plan
+-    const plan = await planGenerator.createPlan(goal);
+-    
+-    // 3. Execute with pauses
+-    const result = await this.executeWithTeaching(
+-      userId, 
+-      plan, 
+-      mode
+-    );
+-    
+-    return result;
++const { EventEmitter } = require('events');
++const modeSelector = require('./modeSelector');
++const explanationGenerator = require('./explanationGenerator');
++const variantGenerator = require('./variantGenerator');
++const { decideNextStep, isSensitiveStep, callNexusWithTimeout } = require('../backend-routing/taskPlanner');
++const { NEXUS_ACTIONS } = require('../backend-routing/intentRouter');
++
++const MAX_STEPS = 15;
++
++// Simple in-memory per-user skill tracking. There's no `learningProgress`
++// table/service anywhere in this codebase yet — swap this for a real DB
++// write (e.g. a Supabase `learning_progress` table) when one exists.
++const skillLevels = new Map(); // userId -> { level, skills: Set }
++
++function getSkillState(userId) {
++  if (!skillLevels.has(userId)) {
++    skillLevels.set(userId, { level: 1, skills: new Set() });
++  }
++  return skillLevels.get(userId);
++}
++
++class HybridOrchestrator extends EventEmitter {
++  /**
++   * Kicks off background execution and returns `this` immediately so the
++   * caller can attach 'step-complete' / 'teaching-moment' / 'growth-update'
++   * / 'complete' / 'error' listeners (see routes/hybrid.js).
++   */
++  executeGoal(userId, goal) {
++    // Run async without blocking the caller; all progress goes out as events.
++    this._run(userId, goal).catch(err => {
++      this.emit('error', { message: err.message });
++    });
++    return this;
+   }
+ 
+-  async executeWithTeaching(userId, plan, mode) {
+-    const steps = plan.steps; // [step1, step2, step3...]
+-    const results = [];
++  async _run(userId, goal) {
++    const mode = await modeSelector.selectMode(userId, goal);
++    const history = [];
+     const learnings = [];
+ 
+-    for (let i = 0; i < steps.length; i++) {
+-      const step = steps[i];
+-      
++    for (let i = 0; i < MAX_STEPS; i++) {
++      const next = await decideNextStep(goal, history);
++
++      if (next.needs_clarification) {
++        this.emit('teaching-moment', {
++          whatHappened: 'Paused for input',
++          whyThisApproach: next.question || 'Need more detail to continue.',
++          patternToRemember: null,
++          challenge: null,
++        });
++        this.emit('complete', {
++          goal,
++          status: 'awaiting_clarification',
++          question: next.question,
++          execution: history,
++          learnings,
++        });
++        return;
++      }
++
++      if (next.done) break;
++
++      if (!next.action || !NEXUS_ACTIONS.includes(next.action)) {
++        this.emit('error', { message: 'Planner produced an invalid step.' });
++        return;
++      }
++
++      if (isSensitiveStep(next)) {
++        this.emit('complete', {
++          goal,
++          status: 'paused_for_approval',
++          message: `Next step ("${next.action}") needs approval (sensitive/login/payment).`,
++          execution: history,
++          learnings,
++        });
++        return;
++      }
++
+       // === EXECUTE ===
+-      const execution = await this.executeStep(step);
+-      results.push(execution);
++      const execution = await callNexusWithTimeout(next.action, next.payload);
++      const step = { name: next.action, importance: next.importance || 'normal', isNewPattern: !!next.isNewPattern, pattern: next.action, trigger: next.reason, solution: next.action, context: next.payload };
++      history.push({ action: next.action, success: execution.success, error: execution.error, data: execution.data || null });
++
++      this.emit('step-complete', { step: step.name, output: execution });
+ 
+-      // === TEACH (Smart interrupts) ===
++      // === TEACH (smart interrupts) ===
+       if (this.shouldTeach(step, mode)) {
+-        const teaching = await this.generateTeaching(
+-          userId, 
+-          step, 
+-          execution
+-        );
++        const teaching = await this.generateTeaching(userId, step, execution);
+         learnings.push(teaching);
++        this.emit('teaching-moment', teaching);
+       }
+ 
+       // === VERIFY ===
+-      const verified = await this.verifyStep(execution);
+-      if (!verified.success) {
+-        await this.rollback();
+-        throw new Error(verified.error);
++      if (!execution.success) {
++        this.emit('error', { message: `Step "${next.action}" failed: ${execution.error}`, execution: history });
++        return;
+       }
+ 
+       // === INTERMEDIATE REPORT ===
+-      if (i % 3 === 0) {
+-        await this.sendProgressUpdate(userId, {
+-          completed: i + 1,
+-          total: steps.length,
+-          learnings: learnings.slice(-2)
++      if (i > 0 && i % 3 === 0) {
++        this.emit('growth-update', {
++          skillsGained: learnings.length,
++          levelBefore: getSkillState(userId).level,
++          levelAfter: getSkillState(userId).level,
+         });
+       }
+     }
+ 
+     // === FINAL SUMMARY ===
+-    return {
++    const growth = await this.calculateGrowth(userId, learnings);
++    this.emit('growth-update', growth);
++    this.emit('complete', {
+       goal,
+       status: 'completed',
+-      execution: results,
++      execution: history,
+       learnings,
+-      userGrowth: await this.calculateGrowth(userId, learnings),
+-      nextChallenge: await this.generateNextChallenge(userId, learnings)
+-    };
++      userGrowth: growth,
++      nextChallenge: await this.generateNextChallenge(userId, learnings),
++    });
+   }
+ 
+   shouldTeach(step, mode) {
+     if (mode === 'LEARN') return true;
+     if (mode === 'EXECUTE') return false;
+-    
+-    // HYBRID: Teach only if:
+-    // - This is a critical decision point
+-    // - User doesn't know this pattern
+-    // - It's worth learning
+-    
+-    return step.importance === 'high' && 
+-           step.isNewPattern === true;
++
++    // HYBRID: teach only for steps flagged as high-importance/new-pattern
++    // by the planner. Most steps won't set these, so HYBRID mode stays
++    // mostly quiet by default — that's expected, not a bug.
++    return step.importance === 'high' && step.isNewPattern === true;
+   }
+ 
+   async generateTeaching(userId, step, execution) {
+     return {
+-      whatHappened: `Step ${step.name} was executed`,
+-      whyThisApproach: await explanationGenerator.explain(step),
+-      whyNotAlternatives: await this.explainAlternatives(step),
++      whatHappened: `Step "${step.name}" was executed`,
++      whyThisApproach: await explanationGenerator.generateReasoning(step.name, step.pattern),
++      whyNotAlternatives: await explanationGenerator.explainAlternatives(step.name, step.pattern),
+       patternToRemember: step.pattern,
+-      nextTime: `Watch for ${step.trigger} - use ${step.solution}`,
+-      challenge: await variantGenerator.createVariant(step)
++      nextTime: step.trigger ? `Watch for: ${step.trigger}` : undefined,
++      challenge: await variantGenerator.createVariant({ pattern: step.pattern, difficulty: getSkillState(userId).level, context: step.context }),
+     };
+   }
+ 
+   async calculateGrowth(userId, learnings) {
+-    const newSkills = learnings.map(l => l.patternToRemember);
+-    
+-    // Update user profile
+-    await learningProgress.update(userId, {
+-      newSkillsGained: newSkills,
+-      skillLevel: await this.calculateNewLevel(userId, newSkills),
+-      nextDifficultyLevel: Math.min(10, currentLevel + 1)
+-    });
++    const state = getSkillState(userId);
++    const levelBefore = state.level;
++    const newSkills = learnings.map(l => l.patternToRemember).filter(Boolean);
++    newSkills.forEach(s => state.skills.add(s));
++    if (newSkills.length > 0) state.level = Math.min(10, state.level + 1);
+ 
+     return {
+       skillsGained: newSkills.length,
+-      levelBefore: currentLevel,
+-      levelAfter: currentLevel + 1,
+-      readyForHarderGoals: true
++      levelBefore,
++      levelAfter: state.level,
++      readyForHarderGoals: state.level > levelBefore,
+     };
+   }
+ 
+   async generateNextChallenge(userId, learnings) {
+-    const skillsJustLearned = learnings.map(l => l.patternToRemember);
+-    
+-    // Similar problem, slightly harder
++    if (learnings.length === 0) return null;
++    const skillsJustLearned = learnings.map(l => l.patternToRemember).filter(Boolean);
++    if (skillsJustLearned.length === 0) return null;
++    const state = getSkillState(userId);
++
+     return {
+       goal: `Apply ${skillsJustLearned[0]} in a different context`,
+-      difficulty: currentDifficulty + 1,
+-      estimatedTime: 25,
++      difficulty: Math.min(10, state.level + 1),
++      estimatedTime: 15,
+       relatesTo: skillsJustLearned,
+-      hint: `Remember: ${learnings[0].nextTime}`
++      hint: learnings[0].nextTime || `Remember: ${skillsJustLearned[0]}`,
+     };
+   }
+ }
+ 
+-module.exports = new HybridOrchestrator();
+\ No newline at end of file
++// Exported as the CLASS, not a singleton instance. A shared singleton
++// EventEmitter would leak events across concurrent goals from different
++// users/requests (request A's listeners would also receive request B's
++// 'step-complete' events). routes/hybrid.js does `new HybridOrchestrator()`
++// per request instead.
++module.exports = HybridOrchestrator;
+diff --git a/mcis/backend/services/modeSelector.js b/mcis/backend/services/modeSelector.js
+index ac8ff93..c3a1176 100644
+--- a/mcis/backend/services/modeSelector.js
++++ b/mcis/backend/services/modeSelector.js
+@@ -1,15 +1,48 @@
+ // backend/services/modeSelector.js
++//
++// NOTE: this used to reference this.getUserProfile()/this.analyzeGoal()
++// without defining them anywhere — any call to selectMode() would throw
++// "getUserProfile is not a function". Added lightweight implementations
++// below so the class is actually callable. There's no dedicated
++// "learning preferences" table yet, so getUserProfile falls back to a
++// small in-memory default; swap this for a real DB lookup (e.g. Supabase
++// `user_profiles`) when that table exists.
+ 
+ class ModeSelector {
++  constructor() {
++    this._profileCache = new Map();
++  }
++
++  async getUserProfile(userId) {
++    if (this._profileCache.has(userId)) return this._profileCache.get(userId);
++    // Sensible default: no explicit learning goal, no time pressure ->
++    // HYBRID mode (do the work, teach along the way when it's cheap to).
++    const profile = { learningGoal: false, timePressure: false };
++    this._profileCache.set(userId, profile);
++    return profile;
++  }
++
++  setUserProfile(userId, profile) {
++    this._profileCache.set(userId, { ...(this._profileCache.get(userId) || {}), ...profile });
++  }
++
++  async analyzeGoal(goal) {
++    const text = String(goal || '');
++    // Very rough heuristic: longer / multi-clause goals take longer.
++    const clauses = text.split(/,| and | phir | uske baad /i).length;
++    const timeEstimate = Math.min(60, Math.max(5, clauses * 6 + Math.round(text.length / 20)));
++    return { timeEstimate, clauses };
++  }
++
+   async selectMode(userId, goal) {
+     const userProfile = await this.getUserProfile(userId);
+     const goalAnalysis = await this.analyzeGoal(goal);
+-    
++
+     // Logic:
+     // - If user has TIME + wants to LEARN → LEARN mode
+     // - If user is TIME-PRESSED → EXECUTE mode
+     // - If user wants BOTH → HYBRID mode
+-    
++
+     if (userProfile.learningGoal && goalAnalysis.timeEstimate > 20) {
+       return 'LEARN'; // Socratic questions
+     } else if (userProfile.timePressure) {
+@@ -18,4 +51,8 @@ class ModeSelector {
+       return 'HYBRID'; // Do + teach
+     }
+   }
+-}
+\ No newline at end of file
++}
++
++// Was missing entirely before — meant `require('./modeSelector')` returned
++// an empty object and any usage crashed with "selectMode is not a function".
++module.exports = new ModeSelector();
+\ No newline at end of file
+diff --git a/mcis/backend/services/variantGenerator.js b/mcis/backend/services/variantGenerator.js
+index 5d8c873..6844967 100644
+--- a/mcis/backend/services/variantGenerator.js
++++ b/mcis/backend/services/variantGenerator.js
+@@ -1,4 +1,24 @@
+ // backend/services/variantGenerator.js
++//
++// NOTE: previously called `claude.messages.create(...)` with no client
++// ever defined (no Anthropic SDK dependency in this project) — every call
++// would throw. Rewired to the Groq client already used elsewhere in this
++// codebase so it actually runs.
++
++const Groq = require('groq-sdk');
++const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
++
++async function askGroq(prompt, maxTokens = 300) {
++  const completion = await groq.chat.completions.create({
++    model: 'qwen/qwen3.6-27b',
++    messages: [{ role: 'user', content: prompt }],
++    max_tokens: maxTokens,
++    temperature: 0.5,
++  });
++  return (completion.choices[0].message.content || '')
++    .replace(/<think>[\s\S]*?<\/think>/gi, '')
++    .trim();
++}
+ 
+ class VariantGenerator {
+   async createVariant(step) {
+@@ -28,25 +48,18 @@ class VariantGenerator {
+   }
+ 
+   async generateVariantProblem(pattern, difficulty) {
+-    const prompt = `
++    return askGroq(`
+       Pattern learned: ${pattern}
+       Difficulty: ${difficulty}/10
+-      
++
+       Generate a NEW problem that requires using this pattern.
+       Make it 20% harder than the original.
+-      
++
+       Format:
+       Problem: [description]
+       Input: [example input]
+       Expected Output: [example output]
+-    `;
+-
+-    const response = await claude.messages.create({
+-      model: "claude-opus-4-6",
+-      messages: [{ role: "user", content: prompt }]
+-    });
+-
+-    return response.content[0].text;
++    `);
+   }
+ 
+   async generateTestCases(pattern) {
+diff --git a/nexus/api_server.py b/nexus/api_server.py
+index 57d9ee9..d255eea 100644
+--- a/nexus/api_server.py
++++ b/nexus/api_server.py
+@@ -27,6 +27,14 @@ GATEWAY_CALL_TIMEOUT = 25  # seconds -- a bit under the client's 30s timeout
+ _executor = None
+ gateway = None
+ 
++# Because the worker is single-threaded (see comment above), a second goal
++# arriving while the first is still executing just silently blocks inside
++# run_in_executor with zero visibility for the caller — the Node side (and
++# the voice UI) has no way to tell "still queued behind another goal" apart
++# from "slow/stuck". These two counters make that state observable.
++_queue_depth = 0  # requests submitted but not yet started executing
++_currently_processing: Optional[str] = None  # action name of the in-flight call
++
+ 
+ def _new_worker():
+     global _executor, gateway
+@@ -48,20 +56,37 @@ class ActionRequest(BaseModel):
+ 
+ @app.post("/execute")
+ async def execute_action(req: ActionRequest):
++    global _queue_depth, _currently_processing
++
++    queued_ahead = _queue_depth
++    _queue_depth += 1
+     loop = asyncio.get_event_loop()
+-    future = loop.run_in_executor(_executor, gateway.execute, req.model_dump())
++
++    def _run():
++        global _currently_processing
++        _currently_processing = req.action
++        try:
++            return gateway.execute(req.model_dump())
++        finally:
++            _currently_processing = None
++
++    future = loop.run_in_executor(_executor, _run)
+ 
+     try:
+         result = await asyncio.wait_for(future, timeout=GATEWAY_CALL_TIMEOUT)
+     except asyncio.TimeoutError:
+         _new_worker()  # abandon the stuck call, start fresh for next requests
++        _queue_depth = max(0, _queue_depth - 1)
+         raise HTTPException(
+             status_code=504,
+             detail=f"Action '{req.action}' timed out after {GATEWAY_CALL_TIMEOUT}s and was abandoned. A fresh session has started for future requests.",
+         )
+     except Exception as error:
++        _queue_depth = max(0, _queue_depth - 1)
+         raise HTTPException(status_code=500, detail=str(error))
+ 
++    _queue_depth = max(0, _queue_depth - 1)
++
+     return {
+         "success": result.success,
+         "platform": result.platform,
+@@ -70,6 +95,19 @@ async def execute_action(req: ActionRequest):
+         "data": getattr(result, "data", None),
+         "error": getattr(result, "error", None),
+         "evidence": getattr(result, "evidence", None),
++        # How many other requests were already waiting when this one was
++        # submitted — lets the caller distinguish "queued behind other
++        # work" from "this one specific action is just slow".
++        "queued_ahead": queued_ahead,
++    }
++
++
++@app.get("/queue-status")
++def queue_status():
++    return {
++        "queue_depth": _queue_depth,
++        "processing": _currently_processing,
++        "busy": _queue_depth > 0 or _currently_processing is not None,
+     }
+ 
+ 

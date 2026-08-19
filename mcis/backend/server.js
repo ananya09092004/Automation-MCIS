@@ -39,6 +39,9 @@ const deviceRoute = require('./routes/device');
 const devicePairing = require('./backend-addon/devicePairing');
 const permissionsRoute = require('./routes/permissions');
 const emergencyStopRoute = require('./routes/emergencyStop');
+// Was never mounted anywhere, even though hybridOrchestrator.js and this
+// route both existed in the repo — /:userId/execute-goal was unreachable.
+const hybridRoute = require('./routes/hybrid');
 // ================================
 // Middleware
 // ================================
@@ -147,6 +150,7 @@ try {
   app.use('/api/multifile', multifileRoutes);
   app.use('/api/command', commandRoute);
   app.use('/api/permissions', permissionsRoute);
+  app.use('/api/hybrid', hybridRoute);
   app.use('/api/device', deviceRoute);
   app.use('/api/device', devicePairing);
   app.use('/api/emergency', emergencyStopRoute);

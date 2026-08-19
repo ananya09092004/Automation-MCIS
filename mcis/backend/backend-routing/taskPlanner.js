@@ -14,8 +14,30 @@ const MAX_DATA_CHARS = 2500;
 const plans = new Map();
 let emergencyStopActive = false;
 
+// How long a finished plan (completed/error/stopped) stays queryable via
+// getPlanStatus() before being garbage-collected from memory.
+const FINISHED_PLAN_TTL_MS = 15 * 60 * 1000;
+
 function makePlanId() {
   return 'plan_' + Math.random().toString(36).slice(2, 10);
+}
+
+function scheduleCleanup(planId) {
+  setTimeout(() => plans.delete(planId), FINISHED_PLAN_TTL_MS).unref?.();
+}
+
+// Snapshot of a plan safe to send to clients (no internal-only fields).
+function snapshot(plan) {
+  if (!plan) return null;
+  return {
+    planId: plan.planId,
+    goal: plan.goal,
+    status: plan.status, // running | paused | awaiting_clarification | completed | error | stopped
+    steps: plan.history,
+    pendingStep: plan.pendingStep || null,
+    pendingQuestion: plan.pendingQuestion || null,
+    result: plan.result || null,
+  };
 }
 
 function isSensitiveStep(step) {
@@ -59,17 +81,24 @@ function truncate(value) {
   return text.length > MAX_DATA_CHARS ? text.slice(0, MAX_DATA_CHARS) + '...(truncated)' : text;
 }
 
-async function decideNextStep(goal, history) {
+async function decideNextStep(goal, history, clarifications = []) {
   const historyText = history.map((h, i) => {
     const evidence = h.evidence ? ` | verified: ${h.evidence.verified}` : '';
     const dataPreview = h.data ? `\n   page/data seen: ${truncate(h.data)}` : '';
     return `${i + 1}. ${h.action} -> ${h.success ? 'success' : 'failed: ' + h.error}${evidence}${dataPreview}`;
   }).join('\n') || '(none yet)';
 
+  const clarificationsText = clarifications.length
+    ? clarifications.map((c, i) => `Q${i + 1}: ${c.question}\nA${i + 1}: ${c.answer}`).join('\n')
+    : '(none)';
+
   const prompt = `You are Nexus's autonomous task planner. The user's goal: "${goal}"
 
 Steps executed so far:
 ${historyText}
+
+Clarifications already asked and answered by the user (use these, don't ask again):
+${clarificationsText}
 
 Valid nexus actions: ${NEXUS_ACTIONS.join(', ')}
 
@@ -95,9 +124,32 @@ INSPECT ONLY WHEN NEEDED — keep this system fast:
   click — adjust or stop and report it.
 - Default to acting directly without inspecting whenever the action doesn't require picking a
   specific on-page element.
+
+WRITING CONTENT INTO AN APP (e.g. "notepad kholo aur ek paragraph likh do", "open notepad and
+write a paragraph about X"):
+- This is a TWO-step pattern: (1) open_app to launch the app (e.g. "Notepad"), (2) type_text
+  with the content as the "value" field, target: { "role": "editor" }.
+- PRIORITY: if the user already dictated/gave the actual text to type (anywhere in the goal
+  text, e.g. "notepad khol aur yeh likh: <text>"), copy it into payload.value VERBATIM — do not
+  paraphrase, shorten, or rewrite it. The user's own words always win.
+- Only if the goal gives a topic but NO literal text to type (e.g. "notepad khol aur ek
+  paragraph likh do <topic> pe", with no dictated sentences) should you compose the paragraph
+  yourself, in the language the user asked in, on-topic, 4-6 sentences.
+- If the goal gives neither literal text NOR a topic (e.g. just "notepad khol aur likh do" with
+  nothing else) — this is exactly the case to use needs_clarification (below) and ask what to
+  write, rather than inventing content out of nothing.
+
+ASKING THE USER FOR MORE INFO (mid-goal clarification):
+- If you cannot make progress because a REQUIRED piece of information is missing and cannot be
+  inferred (e.g. "book a table" with no restaurant name, "email X" with no recipient) — do NOT
+  guess and do NOT invent an action. Instead respond with:
+  { "done": false, "needs_clarification": true, "question": "<short question in the user's language>", "action": null }
+- Only do this when truly stuck — prefer making a reasonable assumption and proceeding whenever
+  possible, since pausing costs the user time.
+
 Decide the SINGLE next action to make progress toward the goal, or declare the goal complete.
 Respond ONLY with JSON, no markdown:
-{ "done": true|false, "action": "<nexus action name or null>", "payload": { "platform": "desktop"|"browser", "parameters": {}, "target": {}, "value": null }, "reason": "<short reason>" }`;
+{ "done": true|false, "needs_clarification": false, "question": null, "action": "<nexus action name or null>", "payload": { "platform": "desktop"|"browser", "parameters": {}, "target": {}, "value": null }, "reason": "<short reason>" }`;
 
   let result;
   try {
@@ -119,20 +171,39 @@ async function runLoop(plan) {
   while (plan.history.length < MAX_STEPS) {
 
     if (emergencyStopActive) {
-      plans.delete(plan.planId);
-      return { type: 'plan_error', message: 'Emergency stop activate hai — koi automation nahi chalega.' };
+      plan.status = 'error';
+      plan.result = { type: 'plan_error', message: 'Emergency stop activate hai — koi automation nahi chalega.' };
+      scheduleCleanup(plan.planId);
+      return plan.result;
     }
 
-    const next = await decideNextStep(plan.goal, plan.history);
+    const next = await decideNextStep(plan.goal, plan.history, plan.clarifications);
+
+    if (next.needs_clarification) {
+      plan.status = 'awaiting_clarification';
+      plan.pendingQuestion = next.question || 'Thoda aur detail de sakte ho?';
+      plan.result = null;
+      // Do NOT delete/cleanup — plan stays alive waiting for submitClarification().
+      return {
+        type: 'plan_awaiting_clarification',
+        planId: plan.planId,
+        message: plan.pendingQuestion,
+        resource: `plan:${plan.planId}`,
+      };
+    }
 
     if (next.done) {
-      plans.delete(plan.planId);
-      return { type: 'plan_complete', message: next.reason || 'Goal achieved.', steps: plan.history };
+      plan.status = 'completed';
+      plan.result = { type: 'plan_complete', message: next.reason || 'Goal achieved.', steps: plan.history };
+      scheduleCleanup(plan.planId);
+      return plan.result;
     }
 
     if (!next.action || !NEXUS_ACTIONS.includes(next.action)) {
-      plans.delete(plan.planId);
-      return { type: 'plan_error', message: 'Planner produced an invalid step.' };
+      plan.status = 'error';
+      plan.result = { type: 'plan_error', message: 'Planner produced an invalid step.' };
+      scheduleCleanup(plan.planId);
+      return plan.result;
     }
 
     if (isSensitiveStep(next)) {
@@ -163,22 +234,32 @@ async function runLoop(plan) {
     });
 
     if (!result.success) {
-      plans.delete(plan.planId);
-      return { type: 'plan_error', message: `Step "${next.action}" failed even after retry: ${result.error}`, steps: plan.history };
+      plan.status = 'error';
+      plan.result = { type: 'plan_error', message: `Step "${next.action}" failed even after retry: ${result.error}`, steps: plan.history };
+      scheduleCleanup(plan.planId);
+      return plan.result;
     }
   }
 
-  plans.delete(plan.planId);
-  return { type: 'plan_stopped', message: 'Max steps tak pahunch gaye, goal complete nahi hua.', steps: plan.history };
+  plan.status = 'stopped';
+  plan.result = { type: 'plan_stopped', message: 'Max steps tak pahunch gaye, goal complete nahi hua.', steps: plan.history };
+  scheduleCleanup(plan.planId);
+  return plan.result;
 }
 
+function newPlan(userId, goal) {
+  const planId = makePlanId();
+  const plan = { planId, userId, goal, history: [], clarifications: [], status: 'running', pendingStep: null, pendingQuestion: null, result: null };
+  plans.set(planId, plan);
+  return plan;
+}
+
+// --- Synchronous (blocking) API — kept for any existing callers. ---
 async function startPlan(userId, goal) {
   if (emergencyStopActive) {
     return { type: 'plan_error', message: 'Emergency stop activate hai — pehle resume karo.' };
   }
-  const planId = makePlanId();
-  const plan = { planId, userId, goal, history: [], status: 'running' };
-  plans.set(planId, plan);
+  const plan = newPlan(userId, goal);
   return runLoop(plan);
 }
 
@@ -191,7 +272,86 @@ async function resumePlan(planId) {
     return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
   }
   plan.status = 'running';
+  plan.pendingStep = null;
   return runLoop(plan);
 }
 
-module.exports = { startPlan, resumePlan, triggerEmergencyStop, clearEmergencyStop };
+// --- Background (non-blocking) API — use these for goal execution so the
+// HTTP request returns immediately; the caller polls getPlanStatus(planId). ---
+function startPlanAsync(userId, goal) {
+  if (emergencyStopActive) {
+    return { type: 'plan_error', message: 'Emergency stop activate hai — pehle resume karo.' };
+  }
+  const plan = newPlan(userId, goal);
+  // Fire and forget — errors are captured onto the plan itself so polling
+  // always has something sensible to report, never an unhandled rejection.
+  runLoop(plan).catch(err => {
+    plan.status = 'error';
+    plan.result = { type: 'plan_error', message: err.message };
+    scheduleCleanup(plan.planId);
+  });
+  return { type: 'plan_started', planId: plan.planId, status: 'running' };
+}
+
+function resumePlanAsync(planId) {
+  if (emergencyStopActive) {
+    return { type: 'plan_error', message: 'Emergency stop activate hai.' };
+  }
+  const plan = plans.get(planId);
+  if (!plan) {
+    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+  }
+  plan.status = 'running';
+  plan.pendingStep = null;
+  runLoop(plan).catch(err => {
+    plan.status = 'error';
+    plan.result = { type: 'plan_error', message: err.message };
+    scheduleCleanup(plan.planId);
+  });
+  return { type: 'plan_started', planId: plan.planId, status: 'running' };
+}
+
+// Answer a mid-goal clarifying question and resume execution in the background.
+function submitClarification(planId, answer) {
+  const plan = plans.get(planId);
+  if (!plan) {
+    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+  }
+  if (plan.status !== 'awaiting_clarification') {
+    return { type: 'plan_error', message: 'Ye plan clarification ka wait nahi kar raha.' };
+  }
+  plan.clarifications.push({ question: plan.pendingQuestion, answer });
+  plan.pendingQuestion = null;
+  plan.status = 'running';
+  runLoop(plan).catch(err => {
+    plan.status = 'error';
+    plan.result = { type: 'plan_error', message: err.message };
+    scheduleCleanup(plan.planId);
+  });
+  return { type: 'plan_started', planId: plan.planId, status: 'running' };
+}
+
+function getPlanStatus(planId) {
+  const plan = plans.get(planId);
+  if (!plan) {
+    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+  }
+  return snapshot(plan);
+}
+
+module.exports = {
+  startPlan,
+  resumePlan,
+  startPlanAsync,
+  resumePlanAsync,
+  submitClarification,
+  getPlanStatus,
+  triggerEmergencyStop,
+  clearEmergencyStop,
+  // Exported so other orchestration experiments (e.g. hybridOrchestrator's
+  // teaching mode) can reuse the same step-decision/execution primitives
+  // instead of re-implementing (and re-diverging from) this logic.
+  decideNextStep,
+  isSensitiveStep,
+  callNexusWithTimeout,
+};

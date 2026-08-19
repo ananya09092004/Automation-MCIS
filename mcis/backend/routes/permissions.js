@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { grantPermission } = require('../security-engine/permissions');
-const { resumePlan } = require('../backend-routing/taskPlanner');
+const { resumePlanAsync } = require('../backend-routing/taskPlanner');
 
 router.post('/grant', async (req, res) => {
   const userId = 'test-user-123';
@@ -14,7 +14,9 @@ router.post('/grant', async (req, res) => {
   try {
     if (resource.startsWith('plan:')) {
       const planId = resource.replace('plan:', '');
-      const result = await resumePlan(planId);
+      // Non-blocking: returns immediately, client polls
+      // GET /api/command/goal/:planId/status for progress/completion.
+      const result = resumePlanAsync(planId);
       return res.json(result);
     }
 

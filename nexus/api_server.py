@@ -27,6 +27,14 @@ GATEWAY_CALL_TIMEOUT = 25  # seconds -- a bit under the client's 30s timeout
 _executor = None
 gateway = None
 
+# Because the worker is single-threaded (see comment above), a second goal
+# arriving while the first is still executing just silently blocks inside
+# run_in_executor with zero visibility for the caller — the Node side (and
+# the voice UI) has no way to tell "still queued behind another goal" apart
+# from "slow/stuck". These two counters make that state observable.
+_queue_depth = 0  # requests submitted but not yet started executing
+_currently_processing: Optional[str] = None  # action name of the in-flight call
+
 
 def _new_worker():
     global _executor, gateway
@@ -48,19 +56,36 @@ class ActionRequest(BaseModel):
 
 @app.post("/execute")
 async def execute_action(req: ActionRequest):
+    global _queue_depth, _currently_processing
+
+    queued_ahead = _queue_depth
+    _queue_depth += 1
     loop = asyncio.get_event_loop()
-    future = loop.run_in_executor(_executor, gateway.execute, req.model_dump())
+
+    def _run():
+        global _currently_processing
+        _currently_processing = req.action
+        try:
+            return gateway.execute(req.model_dump())
+        finally:
+            _currently_processing = None
+
+    future = loop.run_in_executor(_executor, _run)
 
     try:
         result = await asyncio.wait_for(future, timeout=GATEWAY_CALL_TIMEOUT)
     except asyncio.TimeoutError:
         _new_worker()  # abandon the stuck call, start fresh for next requests
+        _queue_depth = max(0, _queue_depth - 1)
         raise HTTPException(
             status_code=504,
             detail=f"Action '{req.action}' timed out after {GATEWAY_CALL_TIMEOUT}s and was abandoned. A fresh session has started for future requests.",
         )
     except Exception as error:
+        _queue_depth = max(0, _queue_depth - 1)
         raise HTTPException(status_code=500, detail=str(error))
+
+    _queue_depth = max(0, _queue_depth - 1)
 
     return {
         "success": result.success,
@@ -70,6 +95,19 @@ async def execute_action(req: ActionRequest):
         "data": getattr(result, "data", None),
         "error": getattr(result, "error", None),
         "evidence": getattr(result, "evidence", None),
+        # How many other requests were already waiting when this one was
+        # submitted — lets the caller distinguish "queued behind other
+        # work" from "this one specific action is just slow".
+        "queued_ahead": queued_ahead,
+    }
+
+
+@app.get("/queue-status")
+def queue_status():
+    return {
+        "queue_depth": _queue_depth,
+        "processing": _currently_processing,
+        "busy": _queue_depth > 0 or _currently_processing is not None,
     }
 
 
