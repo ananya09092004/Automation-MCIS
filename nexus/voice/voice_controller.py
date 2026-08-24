@@ -1,8 +1,11 @@
+import threading
+import keyboard
 import requests
 
 from voice.wake_word import WakeWordDetector
 from voice.speech_to_text import SpeechToText
 from voice.text_to_speech import TextToSpeech
+from voice.lang_detect import detect_ack_phrase
 
 
 MCIS_COMMAND_URL = "http://localhost:5051/api/command"
@@ -14,13 +17,32 @@ DEVICE_ID = "voice-listener-01"  # any identifier for this laptop's voice listen
 class VoiceController:
 
     def __init__(self):
-
         self.wake = WakeWordDetector()
         self.stt = SpeechToText()
         self.tts = TextToSpeech()
+        self.muted = threading.Event()
+        self._setup_hotkeys()
+
+    def _setup_hotkeys(self):
+        def do_mute():
+            if not self.muted.is_set():
+                self.muted.set()
+                print("[HOTKEY] Ctrl+M pressed -- muted.")
+                self.tts.speak("Muted. Ctrl plus N se wapas jagao.")
+
+        def do_unmute():
+            if self.muted.is_set():
+                self.muted.clear()
+                print("[HOTKEY] Ctrl+N pressed -- listening resumed.")
+                self.tts.speak("Wapas sun rahi hoon.")
+
+        try:
+            keyboard.add_hotkey("ctrl+m", do_mute)
+            keyboard.add_hotkey("ctrl+n", do_unmute)
+        except Exception as error:
+            print(f"[HOTKEY] Could not register global hotkeys: {error}")
 
     def _confirm(self, prompt: str) -> bool:
-
         self.tts.speak(prompt + " Haan ya nahi boliye.")
         print("CONFIRMATION: listening for haan/yes...")
         answer = self.stt.listen()
@@ -50,24 +72,9 @@ class VoiceController:
         return command in ("emergency stop", "stop stop stop", "ruk jao", "sab band karo")
 
     def _detect_ack_phrase(self, command: str) -> str:
-        """Pick a short acknowledgment phrase matching the language the user just spoke in."""
-        text = command.strip()
-
-        # Devanagari script present -> Hindi
-        if any('\u0900' <= ch <= '\u097F' for ch in text):
-            return "मैं कर रही हूँ।"
-
-        # Common Hinglish/Hindi words written in Roman script
-        hinglish_words = {"kholo", "khol", "karo", "kar", "do", "hai", "chahiye", "aur", "wala", "wali"}
-        words = set(text.lower().split())
-        if words & hinglish_words:
-            return "Kar rahi hoon."
-
-        # Default: English
-        return "Working on it."
+        return detect_ack_phrase(command)
 
     def _speak_response(self, data: dict) -> str:
-        """Turn MCIS's /api/command JSON response into a spoken sentence."""
         response_type = data.get("type")
 
         if response_type in ("permission_required", "plan_paused"):
@@ -118,10 +125,6 @@ class VoiceController:
             data = self._post_command(command)
             print("MCIS RESPONSE:", data)
 
-            # Loop: keep confirming + resuming until the task finishes,
-            # fails, or the user declines a confirmation. Handles both
-            # simple permission_required (single action) and plan_paused
-            # (multi-step goal waiting mid-way for approval).
             while data.get("type") in ("permission_required", "plan_paused"):
                 resource = data.get("resource", "this")
                 approved = self._confirm(
@@ -130,7 +133,6 @@ class VoiceController:
 
                 if not approved:
                     return "Theek hai, cancel kar diya."
-
                 try:
                     grant_res = requests.post(
                         MCIS_GRANT_URL,
@@ -143,46 +145,47 @@ class VoiceController:
                 except requests.exceptions.RequestException as error:
                     print("GRANT ERROR:", error)
                     return "Approval save nahi ho payi, dobara try karo."
-
             return self._speak_response(data)
-
         except requests.exceptions.RequestException as error:
             print("MCIS CONNECTION ERROR:", error)
             return "MCIS backend se connect nahi ho paya. Check karo ki backend chal raha hai."
 
     def run(self):
-
         print("Nexus Voice Started...")
-
         while True:
-
             print("Waiting for wake word...")
 
+            if self.muted.is_set():
+                self.muted.wait()
+
             try:
-                if not self.wake.wait():
+                heard_wake, trailing_command = self.wake.wait_with_command()
+                if not heard_wake:
                     continue
             except KeyboardInterrupt:
                 break
 
-            self.tts.speak("Yes?")
-            print("Nexus is listening...")
+            command = trailing_command.strip() if trailing_command else None
+
+            if command:
+                print("USER (with wake word):", command)
+            else:
+                print("Nexus is listening...")
 
             while True:
-
-                try:
-                    command = self.stt.listen()
-                except KeyboardInterrupt:
-                    return
+                if self.muted.is_set():
+                    command = None
+                    break
 
                 if not command:
-                    self.tts.speak("Sorry, I didn't catch that.")
-                    continue
-
-                print("USER :", command)
-
-                # --------------------------------
-                # EMERGENCY STOP — highest priority, checked before anything else
-                # --------------------------------
+                    try:
+                        command = self.stt.listen()
+                    except KeyboardInterrupt:
+                        return
+                    if not command:
+                        self.tts.speak("Sorry, dobara boliye.")
+                        continue
+                    print("USER :", command)
 
                 if self._is_emergency_stop(command):
                     try:
@@ -190,6 +193,7 @@ class VoiceController:
                     except requests.exceptions.RequestException as error:
                         print("EMERGENCY STOP REQUEST ERROR:", error)
                     self.tts.speak("Emergency stop. Sab ruk gaya.")
+                    command = None
                     continue
 
                 if self._is_exit(command):
@@ -198,9 +202,11 @@ class VoiceController:
 
                 if self._is_stop_listening(command):
                     self.tts.speak("Okay. Main sleep mode mein ja rahi hoon.")
+                    command = None
                     break
 
                 self.tts.speak(self._detect_ack_phrase(command))
                 response_text = self._send_to_mcis(command)
                 print("MCIS:", response_text)
                 self.tts.speak(response_text)
+                command = None

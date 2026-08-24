@@ -1,4 +1,19 @@
+if (process.pkg) {
+  const koffi = require('koffi');
+  const path = require('path');
+  const originalLoad = koffi.load;
+  koffi.load = function (dllPath, ...rest) {
+    let realPath = dllPath;
+    if (typeof dllPath === 'string' && /libvosk\.(dll|dylib|so)$/i.test(dllPath)) {
+      const distDir = path.dirname(process.execPath);
+      realPath = path.join(distDir, 'bin-win32-x64', 'libvosk.dll');
+    }
+    return originalLoad.call(koffi, realPath, ...rest);
+  };
+}
+
 const WebSocket = require('ws');
+const notifier = require('node-notifier');
 const { loadOrPair } = require('./pairing');
 const { startVoice } = require('./voice');
 const { setupMuteToggle } = require('./voice/muteControl');
@@ -82,6 +97,13 @@ async function main() {
   setupMuteToggle();
   config = await loadOrPair();
   connect();
+
+  notifier.notify({
+    title: 'MCIS Agent',
+    message: "Running in background. Say 'Hey Nexus' for voice commands. Explore MCIS: your-mcis-site.com",
+    sound: false,
+    wait: false
+  });
 }
 
 process.on('uncaughtException', (err) => {

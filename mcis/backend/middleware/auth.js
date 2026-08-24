@@ -13,9 +13,17 @@ const publicApiPaths = [
   { method: 'POST', path: '/emergency/resume' },
 ];
 
+const publicApiPathPatterns = [
+  { method: 'GET', pattern: /^\/command\/goal\/[^/]+\/status$/ },
+  { method: 'POST', pattern: /^\/command\/goal\/[^/]+\/answer$/ },
+];
+
 function isPublicApiRequest(req) {
-  return publicApiPaths.some(
-    (route) => route.method === req.method && req.path === route.path
+  if (publicApiPaths.some((route) => route.method === req.method && req.path === route.path)) {
+    return true;
+  }
+  return publicApiPathPatterns.some(
+    (route) => route.method === req.method && route.pattern.test(req.path)
   );
 }
 

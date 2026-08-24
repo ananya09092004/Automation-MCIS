@@ -13,23 +13,16 @@ const aiTasks = require('../ai-tasks/aiTasks');
 const productivity = require('../productivity/productivity');
 const calendar = require('../productivity/calendar');
 const { tryFastPath } = require('../backend-routing/fastPath');
+const { askAI } = require('../services/ai');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Nexus actions that require approval before running (see nexus/docs/09_supported_actions.md)
 const HIGH_RISK_ACTIONS = [
   'delete_file', 'delete_folder', 'move_file', 'move_folder', 'rename_file', 'rename_folder',
   'write_file', 'run_terminal', 'kill_process', 'close_app', 'close_window', 'login',
 ];
 
-// Tracks each user's most recent *successful* type_text call so consecutive
-// dictation commands ("ye likh: X" ... then later "ab yeh likh: Y") land on
-// a new line instead of gluing onto the previous text — type_text itself
-// just types at the current cursor position (see nexus/desktop/keyboard),
-// it has no concept of "this is a fresh line of dictation" on its own.
-// Cleared automatically if the user switches app/target or goes quiet for
-// a while, so it never bleeds into an unrelated later typing action.
 const DICTATION_CONTINUITY_MS = 5 * 60 * 1000;
-const lastDictation = new Map(); // userId -> { app, target, at }
+const lastDictation = new Map();
 
 function dictationTargetKey(payload) {
   const app = payload?.parameters?.app || payload?.platform || '';
@@ -72,14 +65,23 @@ const PRODUCTIVITY_HANDLERS = {
   listUpcomingEvents: (userId, p) => calendar.listUpcomingEvents(userId, p.maxResults)
 };
 
+const USER_ID_CACHE_TTL_MS = 5 * 60 * 1000;
+const userIdCache = new Map();
+
 async function resolveUserId(req) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
   if (!token) return null;
 
+  const cached = userIdCache.get(token);
+  if (cached && Date.now() - cached.at < USER_ID_CACHE_TTL_MS) {
+    return cached.userId;
+  }
+
   try {
     const admin = getFirebaseAdmin();
     const decoded = await admin.auth().verifyIdToken(token);
+    userIdCache.set(token, { userId: decoded.uid, at: Date.now() });
     return decoded.uid;
   } catch {
     // not a valid Firebase token — fall through to device token check
@@ -92,16 +94,26 @@ async function resolveUserId(req) {
     .single();
 
   if (error || !data) return null;
+  userIdCache.set(token, { userId: data.user_id, at: Date.now() });
   return data.user_id;
 }
 
 router.post('/', async (req, res) => {
-  const userId = await resolveUserId(req) || 'test-user-123';
-  const { message, deviceId } = req.body;
+  let userId = await resolveUserId(req);
 
   if (!userId) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    const devBypassAllowed =
+      process.env.NODE_ENV !== 'production' && process.env.ALLOW_UNAUTHENTICATED_API === 'true';
+
+    if (devBypassAllowed) {
+      userId = 'test-user-123';
+    } else {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
   }
+
+  const { message, deviceId } = req.body;
+
   if (!message) {
     return res.status(400).json({ error: 'message required' });
   }
@@ -109,11 +121,11 @@ router.post('/', async (req, res) => {
   const fastMatch = tryFastPath(message);
   const intent = fastMatch
     ? { type: 'action', action: fastMatch.action, payload: fastMatch.payload }
-    : await classifyIntent(message);
+    : await (async () => { const t0 = Date.now(); const r = await classifyIntent(message); console.log('[TIMING] classifyIntent:', Date.now() - t0, 'ms'); return r; })();
   if (intent.type === 'chat') {
     return res.json({
       type: 'chat',
-      message: intent.message || 'Route this to your existing /api/chat handler on the frontend',
+      message: await askAI(message, '', [], ''),
     });
   }
 
@@ -127,10 +139,6 @@ router.post('/', async (req, res) => {
     }
   }
 
-  // --- Multi-step goal (task planner) ---
-  // Runs in the background so this HTTP request returns immediately instead
-  // of blocking for the whole goal (which can take up to MAX_STEPS * up to
-  // ~30s per step). The client polls GET /api/command/goal/:planId/status.
   if (intent.action === 'run_goal') {
     try {
       const started = taskPlanner.startPlanAsync(userId, intent.payload.goal);
@@ -150,7 +158,6 @@ router.post('/', async (req, res) => {
     }
   }
 
-  // --- Nexus-routed actions (action names already match Nexus's vocabulary) ---
   if (NEXUS_ACTIONS.includes(intent.action)) {
     const needsConfirmation = HIGH_RISK_ACTIONS.includes(intent.action);
     const targetResource =
@@ -173,9 +180,6 @@ router.post('/', async (req, res) => {
     }
 
     try {
-      // If this is another type_text into the SAME app/target as the user's
-      // last dictation (within the last few minutes), prefix a newline so
-      // it lands as a new line instead of gluing onto the previous text.
       if (intent.action === 'type_text' && shouldPrefixNewline(userId, intent.payload)) {
         const currentValue = intent.payload.value ?? '';
         if (!currentValue.startsWith('\n')) {
@@ -184,10 +188,10 @@ router.post('/', async (req, res) => {
       } else if (intent.action === 'type_text') {
         // Fresh dictation target — nothing to prefix, just start tracking it.
       } else if (intent.action === 'open_app' || intent.action === 'navigate') {
-        // Switching context resets dictation continuity for this user.
         forgetDictation(userId);
       }
 
+      const __t0 = Date.now();
       const result = await sendCommandToNexus({
         platform: intent.payload.platform || 'desktop',
         action: intent.action,
@@ -196,19 +200,20 @@ router.post('/', async (req, res) => {
         value: intent.payload.value || null,
         approval_token: intent.payload.approval_token || null
       });
+      console.log('[TIMING] sendCommandToNexus:', Date.now() - __t0, 'ms');
+
       if (intent.action === 'type_text' && result.success) {
         recordDictation(userId, intent.payload);
       }
-      await logAction(userId, intent.action, intent.payload, result);
-      await appendAuditLog(userId, intent.action, intent.payload, result);
+      logAction(userId, intent.action, intent.payload, result).catch(() => {});
+      appendAuditLog(userId, intent.action, intent.payload, result).catch(() => {});
       return res.json({ type: 'nexus_action', action: intent.action, result });
     } catch (err) {
-      await appendAuditLog(userId, intent.action, intent.payload, err);
+      appendAuditLog(userId, intent.action, intent.payload, err).catch(() => {});
       return res.status(500).json({ type: 'nexus_action', action: intent.action, error: err.message });
     }
   }
 
-  // --- Node Desktop Agent fallback (legacy) ---
   if (!deviceId) {
     return res.status(400).json({ error: 'deviceId required for laptop actions' });
   }
@@ -233,16 +238,15 @@ router.post('/', async (req, res) => {
 
   try {
     const result = await sendCommandToAgent(userId, deviceId, intent.action, intent.payload);
-    await logAction(userId, intent.action, intent.payload, result);
-    await appendAuditLog(userId, intent.action, intent.payload, result);
+    logAction(userId, intent.action, intent.payload, result).catch(() => {});
+    appendAuditLog(userId, intent.action, intent.payload, result).catch(() => {});
     res.json({ type: 'action', action: intent.action, result });
   } catch (err) {
-    await appendAuditLog(userId, intent.action, intent.payload, err);
+    appendAuditLog(userId, intent.action, intent.payload, err).catch(() => {});
     res.status(500).json({ type: 'action', action: intent.action, error: err });
   }
 });
 
-// --- Goal status polling (for the background run_goal above) ---
 router.get('/goal/:planId/status', (req, res) => {
   const status = taskPlanner.getPlanStatus(req.params.planId);
   if (status.type === 'plan_error' && !status.status) {
@@ -251,7 +255,6 @@ router.get('/goal/:planId/status', (req, res) => {
   res.json(status);
 });
 
-// --- Answer a mid-goal clarifying question ("kaunsa restaurant?" etc) ---
 router.post('/goal/:planId/answer', async (req, res) => {
   const { answer } = req.body;
   if (!answer) {

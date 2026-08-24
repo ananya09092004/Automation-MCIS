@@ -1,3 +1,5 @@
+import time
+
 from desktop.application_manager.discovery import ApplicationDiscovery
 from desktop.adapters.launcher import Launcher
 from desktop.process_manager.controller import ProcessManager
@@ -20,7 +22,22 @@ class AppController:
         if not app.installed:
             return False
 
-        return self.launcher.launch(app.executable)
+        launched = self.launcher.launch(app.executable)
+
+        if not launched:
+            return False
+
+        self._bring_to_front(app_name)
+
+        return True
+
+    def _bring_to_front(self, app_name: str, timeout: float = 6.0, interval: float = 0.2) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.windows.focus(app_name):
+                return True
+            time.sleep(interval)
+        return False
 
     def is_running(self, app_name: str) -> bool:
 

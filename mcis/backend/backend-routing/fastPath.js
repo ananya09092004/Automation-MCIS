@@ -1,6 +1,6 @@
 // Lightweight fast-path for the most common, UNAMBIGUOUS desktop apps only.
 // We use a whitelist (not a broad regex) so words like "gmail", "amazon",
-// "youtube" â€” which are websites, not desktop apps â€” always fall through to
+// "youtube" — which are websites, not desktop apps — always fall through to
 // Gemini, which correctly routes them to a browser "navigate" action instead.
 
 const KNOWN_DESKTOP_APPS = [
@@ -9,6 +9,27 @@ const KNOWN_DESKTOP_APPS = [
   'settings', 'word', 'excel', 'powerpoint', 'vs code', 'vscode',
   'chrome', 'edge', 'firefox', 'spotify', 'terminal',
 ];
+
+// Common websites with fixed, unambiguous URLs — skip Gemini entirely for
+// these, same speed benefit as the desktop-app fast-path above.
+const KNOWN_WEBSITES = {
+  'gmail': 'https://mail.google.com',
+  'google': 'https://google.com',
+  'youtube': 'https://youtube.com',
+  'amazon': 'https://amazon.in',
+  'facebook': 'https://facebook.com',
+  'instagram': 'https://instagram.com',
+  'twitter': 'https://twitter.com',
+  'x': 'https://x.com',
+  'linkedin': 'https://linkedin.com',
+  'whatsapp': 'https://web.whatsapp.com',
+  'github': 'https://github.com',
+  'netflix': 'https://netflix.com',
+  'maps': 'https://maps.google.com',
+  'google maps': 'https://maps.google.com',
+  'drive': 'https://drive.google.com',
+  'google drive': 'https://drive.google.com',
+};
 
 const OPEN_PATTERNS = [
   /^(?:hey nexus,?\s*)?(?:please\s*)?open\s+(.+?)(?:\s+please)?$/i,
@@ -21,35 +42,34 @@ const CLOSE_PATTERNS = [
   /^(.+?)\s*band\s*kar(?:o|do)$/i,
 ];
 
-function extractApp(text, patterns) {
+function extractTarget(text, patterns) {
   const trimmed = text.trim();
   for (const pattern of patterns) {
     const match = trimmed.match(pattern);
     if (match && match[1]) {
-      const app = match[1].trim().toLowerCase();
-      // Only fast-path if it's an exact match to a known desktop app â€”
-      // anything else (websites, ambiguous names, multi-word phrases)
-      // falls through to Gemini for proper classification.
-      if (KNOWN_DESKTOP_APPS.includes(app)) {
-        return app;
-      }
+      return match[1].trim().toLowerCase();
     }
   }
   return null;
 }
 
 function tryFastPath(message) {
-  const openApp = extractApp(message, OPEN_PATTERNS);
-  if (openApp) {
-    return { action: 'open_app', payload: { platform: 'desktop', parameters: { app: openApp }, target: {}, value: null } };
+  const openTarget = extractTarget(message, OPEN_PATTERNS);
+  if (openTarget) {
+    if (KNOWN_DESKTOP_APPS.includes(openTarget)) {
+      return { action: 'open_app', payload: { platform: 'desktop', parameters: { app: openTarget }, target: {}, value: null } };
+    }
+    if (KNOWN_WEBSITES[openTarget]) {
+      return { action: 'navigate', payload: { platform: 'browser', parameters: { url: KNOWN_WEBSITES[openTarget] }, target: {}, value: KNOWN_WEBSITES[openTarget] } };
+    }
   }
 
-  const closeApp = extractApp(message, CLOSE_PATTERNS);
-  if (closeApp) {
-    return { action: 'close_app', payload: { platform: 'desktop', parameters: { app: closeApp }, target: {}, value: null } };
+  const closeTarget = extractTarget(message, CLOSE_PATTERNS);
+  if (closeTarget && KNOWN_DESKTOP_APPS.includes(closeTarget)) {
+    return { action: 'close_app', payload: { platform: 'desktop', parameters: { app: closeTarget }, target: {}, value: null } };
   }
 
-  return null; // no match â€” caller falls back to Gemini
+  return null; // no match — caller falls back to Gemini
 }
 
 module.exports = { tryFastPath };

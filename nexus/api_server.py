@@ -3,37 +3,40 @@ HTTP bridge for Nexus -- exposes ExecutionGateway over HTTP so the MCIS
 Node.js backend can call browser/desktop/office actions.
 """
 import asyncio
+import os
+from dotenv import load_dotenv
+load_dotenv()
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from pydantic import BaseModel
 
 from execution_gateway import ExecutionGateway
 
 app = FastAPI(title="Nexus Execution API")
 
-# A single worker thread is required because Playwright's sync API is
-# thread-affine (browser/context/page must stay on one thread). But if a
-# single call ever hangs forever (e.g. searching for a desktop app that
-# doesn't exist), that ONE stuck call would permanently block every future
-# request behind it. To prevent that: if a call doesn't finish within
-# GATEWAY_CALL_TIMEOUT, we give up waiting on it and spin up a brand new
-# worker + gateway for all FUTURE requests -- the stuck call is abandoned
-# rather than allowed to freeze the whole server.
-GATEWAY_CALL_TIMEOUT = 25  # seconds -- a bit under the client's 30s timeout
+NEXUS_DEVICE_TOKEN = os.environ.get("NEXUS_DEVICE_TOKEN")
+
+if not NEXUS_DEVICE_TOKEN:
+    print("[Nexus] WARNING: NEXUS_DEVICE_TOKEN is not set. This server will accept unauthenticated requests. Set NEXUS_DEVICE_TOKEN before shipping to users.")
+
+
+def verify_token(x_device_token: Optional[str] = Header(default=None)):
+    if NEXUS_DEVICE_TOKEN:
+        if x_device_token != NEXUS_DEVICE_TOKEN:
+            raise HTTPException(status_code=401, detail="Invalid or missing device token.")
+    return True
+
+
+GATEWAY_CALL_TIMEOUT = 25
 
 _executor = None
 gateway = None
 
-# Because the worker is single-threaded (see comment above), a second goal
-# arriving while the first is still executing just silently blocks inside
-# run_in_executor with zero visibility for the caller — the Node side (and
-# the voice UI) has no way to tell "still queued behind another goal" apart
-# from "slow/stuck". These two counters make that state observable.
-_queue_depth = 0  # requests submitted but not yet started executing
-_currently_processing: Optional[str] = None  # action name of the in-flight call
+_queue_depth = 0
+_currently_processing: Optional[str] = None
 
 
 def _new_worker():
@@ -55,7 +58,9 @@ class ActionRequest(BaseModel):
 
 
 @app.post("/execute")
-async def execute_action(req: ActionRequest):
+async def execute_action(req: ActionRequest, x_device_token: Optional[str] = Header(default=None)):
+    verify_token(x_device_token)
+
     global _queue_depth, _currently_processing
 
     queued_ahead = _queue_depth
@@ -75,7 +80,7 @@ async def execute_action(req: ActionRequest):
     try:
         result = await asyncio.wait_for(future, timeout=GATEWAY_CALL_TIMEOUT)
     except asyncio.TimeoutError:
-        _new_worker()  # abandon the stuck call, start fresh for next requests
+        _new_worker()
         _queue_depth = max(0, _queue_depth - 1)
         raise HTTPException(
             status_code=504,
@@ -95,15 +100,13 @@ async def execute_action(req: ActionRequest):
         "data": getattr(result, "data", None),
         "error": getattr(result, "error", None),
         "evidence": getattr(result, "evidence", None),
-        # How many other requests were already waiting when this one was
-        # submitted — lets the caller distinguish "queued behind other
-        # work" from "this one specific action is just slow".
         "queued_ahead": queued_ahead,
     }
 
 
 @app.get("/queue-status")
-def queue_status():
+def queue_status(x_device_token: Optional[str] = Header(default=None)):
+    verify_token(x_device_token)
     return {
         "queue_depth": _queue_depth,
         "processing": _currently_processing,

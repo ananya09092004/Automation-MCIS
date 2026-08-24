@@ -31,6 +31,7 @@ function newRecognizer(m) {
     // While muted we only need to catch the unmute phrase, but keeping the
     // full grammar (wake + unmute words) avoids swapping recognizers based
     // on mute state, which keeps this simpler and just as accurate.
+    sampleRate: 16000,
     grammar: [...WAKE_PHRASES, ...UNMUTE_PHRASES, '[unk]']
   });
 }
@@ -45,6 +46,7 @@ function listenForWakeWordLocally(onDetected) {
   function attachStream() {
     if (paused) return;
     proc = startContinuousRecording();
+    proc.stderr.on('data', (c) => console.error('[SOX STDERR]', c.toString()));
 
     proc.stdout.on('data', async (chunk) => {
       if (busy || paused) return;

@@ -30,7 +30,7 @@ function buildSoxArgs(outputPath, durationSeconds) {
   const common = ['-r', '16000', '-c', '1', '-b', '16', '-e', 'signed-integer', outputPath, 'trim', '0', String(durationSeconds), 'gain', '4'];
 
   if (platform === 'win32') {
-    return ['-t', 'waveaudio', '-d', ...common];
+    return ['-t', 'waveaudio', 'default', ...common];
   }
   if (platform === 'darwin') {
     return ['-t', 'coreaudio', 'default', ...common];
@@ -46,7 +46,7 @@ function recordWavChunk(durationMs) {
 
     let stderrOutput = '';
     let settled = false;
-    const proc = spawn(SOX_PATH, args, { shell: true });
+    const proc = spawn(SOX_PATH, args);
     proc.stderr.on('data', (c) => { stderrOutput += c.toString(); });
 
     proc.on('error', (err) => {
@@ -123,11 +123,11 @@ function startContinuousRecording(gain) {
   const gainVal = gain || process.env.MCIS_MIC_GAIN || '3';
   const base = ['-r', '16000', '-c', '1', '-b', '16', '-e', 'signed-integer', '-t', 'raw', '-', 'gain', gainVal];
   let args;
-  if (platform === 'win32') args = ['-t', 'waveaudio', '-d', ...base];
+  if (platform === 'win32') args = ['-t', 'waveaudio', 'default', ...base];
   else if (platform === 'darwin') args = ['-t', 'coreaudio', 'default', ...base];
   else args = ['-t', 'alsa', 'default', ...base];
 
-  const proc = spawn(SOX_PATH, args, { shell: true });
+  const proc = spawn(SOX_PATH, args);
   return proc;
 }
 

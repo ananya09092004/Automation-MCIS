@@ -19,3 +19,5 @@ groq>=0.11
 fastapi>=0.115
 uvicorn>=0.32
 pytest>=8.0
+keyboard>=0.13.5
+langdetect>=1.0.9
