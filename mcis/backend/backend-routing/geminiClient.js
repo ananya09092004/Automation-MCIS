@@ -21,11 +21,19 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+// Flash-tier models are built for low latency -- if one hasn't responded
+// within this window it's clearly having an issue, not just being
+// thorough. Lower timeout keeps the worst case (all 4 models in
+// MODEL_CHAIN slow/unresponsive) bounded at ~10s instead of ~16s,
+// without shrinking the fallback chain itself (still tries all 4 on
+// quota/network errors, which typically fail near-instantly anyway).
+const PER_MODEL_TIMEOUT_MS = 2500;
+
 async function generateContent(prompt) {
   let lastError;
   for (const { name, client } of models) {
     try {
-      const result = await withTimeout(client.generateContent(prompt), 4000, name);
+      const result = await withTimeout(client.generateContent(prompt), PER_MODEL_TIMEOUT_MS, name);
       return result;
     } catch (err) {
       lastError = err;

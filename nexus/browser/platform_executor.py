@@ -60,7 +60,12 @@ class BrowserPlatformExecutor:
             return ExecutionResult(True, "browser", action.action, "Completed", data=data, evidence=evidence)
         except Exception as error:
             evidence = {"recovery": self.recovery.recover(self.controller.page).__dict__} if self.controller.page else {}
-            return ExecutionResult(False, "browser", action.action, "Browser action failed", evidence=evidence, error=str(error))
+            # Some exceptions (bare raises, certain Playwright errors)
+            # stringify to an empty string, which made past failures
+            # undiagnosable (error: ''). Always fall back to at least the
+            # exception's type name so there's something to go on.
+            error_text = str(error) or f"{type(error).__name__} (no further details)"
+            return ExecutionResult(False, "browser", action.action, "Browser action failed", evidence=evidence, error=error_text)
 
     def _locator(self, page, target: dict[str, Any]):
         if "selector" in target:

@@ -66,7 +66,8 @@ class DesktopPlatformExecutor:
                                    "Completed" if success else "Action failed", data=data,
                                    evidence={"verified": bool(success)})
         except Exception as error:
-            return ExecutionResult(False, "desktop", action.action, "Desktop action failed", error=str(error))
+            error_text = str(error) or f"{type(error).__name__} (no further details)"
+            return ExecutionResult(False, "desktop", action.action, "Desktop action failed", error=error_text)
 
     def _execute_capability_action(self, action: ExecutionAction) -> ExecutionResult:
         parameters = action.parameters
