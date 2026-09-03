@@ -47,11 +47,35 @@ _HALLUCINATION_PHRASES = {
     # Whisper is well-known to "hallucinate" these exact filler phrases
     # (trained on huge amounts of YouTube audio) when the actual input
     # was silence or near-silence, rather than admitting it heard
-    # nothing. If we get one of these back with a high no_speech_prob,
-    # treat it as noise, not a real command.
+    # nothing. Deliberately does NOT include short words that are also
+    # legitimate confirmation answers elsewhere in the app ("yes", "no",
+    # "okay", "haan") -- filtering those would break the confirm/deny
+    # flow whenever the user answers quietly.
     "thank you", "thank you.", "thanks for watching", "thanks for watching!",
-    "please subscribe", "bye", "bye.", "you", "you.",
+    "thank you for watching", "thank you so much for watching",
+    "please subscribe", "please subscribe.", "bye", "bye.", "you", "you.",
+    "see you next time", "see you in the next video", "i'll see you next time",
+    "hmm", "hmm.", "hm", "hm.", "um", "um.", "uh", "uh.",
+    "i don't know", "i don't know.", "i don't know how to do it",
+    "i'm going to go", "i'm going to go.", "i'm going to go to the next one",
 }
+
+# Below this confidence, treat ANY transcription as unreliable noise and
+# discard it, regardless of what the text says. This is the primary
+# catch-all: Whisper hallucinates plenty of text that will never fit in
+# a fixed phrase list above (odd invented sentences on near-silent
+# audio, e.g. "i don't know how to do it" or "i'm going to go" heard on
+# an empty room) -- the phrase list can't be exhaustive, but a low
+# combined logprob/no_speech confidence reliably flags them anyway.
+_LOW_CONFIDENCE_DISCARD = 0.35
+
+# Higher bar used ONLY for the known-filler-phrase list above. Whisper
+# is often deceptively "confident" about these specific phrases because
+# it saw them so often in training data, so a confidence just above the
+# general noise floor (the old 0.4 cutoff) still wasn't enough to catch
+# them reliably -- this is why "Thank you." kept slipping through as a
+# real command in testing even though it was pure background noise.
+_HALLUCINATION_PHRASE_DISCARD = 0.65
 
 
 def _confidence_from_segments(segments):
@@ -128,14 +152,18 @@ def transcribe(audio, google_recognizer, google_language="en-IN"):
             if text:
                 confidence = _confidence_from_segments(getattr(result, "segments", None))
                 normalized = text.lower().strip(" .!?")
-                if normalized in _HALLUCINATION_PHRASES and (confidence is None or confidence < 0.4):
-                    # This matches a known Whisper hallucination pattern
-                    # (filler phrase + Whisper itself unsure there was
-                    # real speech) -- almost certainly noise/silence, not
-                    # something the user actually said. Treat as nothing
-                    # heard rather than acting on it or even asking the
-                    # user to confirm meaningless text.
-                    print(f"[Nexus Voice] Discarding likely hallucinated transcription: {text!r}")
+
+                low_confidence = confidence is not None and confidence < _LOW_CONFIDENCE_DISCARD
+                unconvincing_filler = normalized in _HALLUCINATION_PHRASES and (
+                    confidence is None or confidence < _HALLUCINATION_PHRASE_DISCARD
+                )
+
+                if low_confidence or unconvincing_filler:
+                    # Almost certainly noise/silence, not something the
+                    # user actually said -- treat as nothing heard rather
+                    # than acting on it or even asking the user to
+                    # confirm meaningless text.
+                    print(f"[Nexus Voice] Discarding likely hallucinated transcription: {text!r} (confidence={confidence})")
                 else:
                     return text, confidence
             # Empty (or discarded-as-hallucination) transcription isn't

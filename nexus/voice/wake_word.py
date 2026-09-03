@@ -1,4 +1,5 @@
 import re
+import audioop
 
 import speech_recognition as sr
 
@@ -16,6 +17,33 @@ RECOGNITION_LANGUAGE = "en-IN"
 # an STT call on audio that was never going to contain the wake phrase.
 MIN_WAKE_AUDIO_SECONDS = 0.4
 
+# recognizer.listen() only STARTS recording once a brief burst crosses
+# energy_threshold, but the clip it hands back can still be mostly quiet
+# (a short noise spike followed by silence padding, or ambient noise
+# that briefly wobbled above a still-imperfect threshold). Sending that
+# to Whisper is exactly what was producing hallucinated sentences like
+# "I'm going to go to the next one." on pure silence -- the after-the-
+# fact confidence filter in transcription.py was already correctly
+# discarding those (they never became commands), but this stops the
+# wasted STT call from happening in the first place. Comparing the
+# clip's OWN average loudness against the recognizer's calibrated
+# threshold, with a small margin, is exactly how the working
+# `integration` pipeline avoids ever sending silence to Whisper: it only
+# forwards audio once local energy-based detection is confident real
+# speech happened. This only filters near-silent clips -- any clip that
+# was genuinely spoken (whisper-quiet Hinglish included) sits well above
+# the calibrated ambient floor and passes through untouched.
+_MIN_AVG_ENERGY_MULTIPLIER = 1.15
+
+
+def _is_probably_silence(audio: "sr.AudioData", energy_threshold: float) -> bool:
+    try:
+        avg_energy = audioop.rms(audio.frame_data, audio.sample_width)
+    except Exception:
+        return False  # can't measure -- don't block on an unexpected format, let STT decide
+    return avg_energy < energy_threshold * _MIN_AVG_ENERGY_MULTIPLIER
+
+
 # Cap how long a single wake-word listen can run. Without this,
 # background speech/TV audio with no real pause (a long sentence, a
 # monologue) gets recorded and transcribed in full before we even get a
@@ -29,8 +57,17 @@ class WakeWordDetector:
         self.wake_word = wake_word.lower()
         self.wake_word_variants = [self.wake_word, "lexus", "nexis", "nexas", "nexxus", "next us"]
         self.recognizer = sr.Recognizer()
-        self.recognizer.pause_threshold = 0.6
-        self.recognizer.energy_threshold = 300
+        # Was 0.6s -- too tight for a bundled "hey nexus <command>" where
+        # the user takes a natural breath/thinking pause before the
+        # command part; that pause alone was enough to cut the capture
+        # off mid-command. 1.0s matches SpeechToText's base threshold.
+        # (Genuinely bundled commands that still get cut are caught by
+        # _ends_mid_thought() in voice_controller.run() and re-listened
+        # properly rather than being dispatched half-finished.)
+        self.recognizer.pause_threshold = 1.0
+        # Seed from the room-calibrated value (see audio_source.py)
+        # instead of a hardcoded guess.
+        self.recognizer.energy_threshold = SharedMicrophone.get_energy_threshold()
         self.recognizer.dynamic_energy_threshold = True
         # If no source is given, fall back to opening a fresh microphone
         # per call (old behavior) -- keeps this class usable standalone
@@ -70,6 +107,14 @@ class WakeWordDetector:
         except Exception:
             duration = None
         if duration is not None and duration < MIN_WAKE_AUDIO_SECONDS:
+            return None
+
+        if _is_probably_silence(audio, self.recognizer.energy_threshold):
+            # Never even call Whisper on this clip -- it's near-silent by
+            # its own measured loudness, so there's nothing for the
+            # confidence filter in transcription.py to catch after the
+            # fact. This is what was producing hallucinated sentences on
+            # plain silence.
             return None
 
         text, _confidence = transcription.transcribe(audio, self.recognizer, RECOGNITION_LANGUAGE)

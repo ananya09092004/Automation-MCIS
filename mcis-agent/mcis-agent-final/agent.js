@@ -53,8 +53,26 @@ function connect() {
 
   ws.on('open', () => {
     console.log(`[MCIS Agent] Connected as ${config.DEVICE_ID}`);
-    if (!voiceStarted) {
+    // Nexus (nexus/voice, Python) is the canonical voice pipeline -- it
+    // owns the microphone, wake word ("Hey Nexus"), STT, hallucination
+    // filtering, endpointing, and TTS. This agent's own voice/ module
+    // (localWake.js + continuousListen.js) is a SEPARATE wake-word +
+    // mic-capture loop that, if started, runs at the same time as
+    // Nexus and fights it for the same Windows mic device -- this was
+    // firing on every launch, which is a direct cause of duplicate/
+    // flaky-sounding voice behavior (two processes both listening for
+    // "Hey Nexus", both able to dispatch a command for the same thing
+    // said once).
+    //
+    // This agent's job is the WebSocket command-execution channel above
+    // (COMMAND_HANDLERS) -- that stays on unconditionally. Its own
+    // voice capture is now opt-in only, for setups that deliberately
+    // don't run the Python Nexus voice pipeline and want this agent's
+    // lighter-weight local-wake path instead.
+    const ownVoiceEnabled = process.env.MCIS_AGENT_OWN_VOICE === 'true';
+    if (ownVoiceEnabled && !voiceStarted) {
       voiceStarted = true;
+      console.log('[MCIS Agent] MCIS_AGENT_OWN_VOICE=true -- starting this agent\'s own voice/mic capture.');
       startVoice({
         BACKEND_HTTP_URL: config.BACKEND_WS_URL.replace(/^ws/, 'http').replace(/\/agent$/, ''),
         DEVICE_ID: config.DEVICE_ID,

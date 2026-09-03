@@ -13,6 +13,7 @@ const aiTasks = require('../ai-tasks/aiTasks');
 const productivity = require('../productivity/productivity');
 const calendar = require('../productivity/calendar');
 const { tryFastPath } = require('../backend-routing/fastPath');
+const taskContext = require('../backend-routing/taskContext');
 const { askAI } = require('../services/ai');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
@@ -68,6 +69,25 @@ const PRODUCTIVITY_HANDLERS = {
 const USER_ID_CACHE_TTL_MS = 5 * 60 * 1000;
 const userIdCache = new Map();
 
+// nexus/voice/voice_controller.py never sent an Authorization header at
+// all -- every voice command hit resolveUserId() with token=null,  fell
+// straight through to the NODE_ENV/ALLOW_UNAUTHENTICATED_API dev-bypass
+// check below, and got 'test-user-123' ONLY if that flag happened to be
+// set. In any environment where it wasn't (e.g. NODE_ENV=production on
+// a real deploy), every single voice command would 401 with no other
+// symptom. This is a real, lightweight device-secret check instead --
+// no network round trip (unlike the Firebase/Supabase path below), and
+// it doesn't depend on a "for testing" flag to work at all.
+const VOICE_DEVICE_TOKEN = process.env.NEXUS_VOICE_DEVICE_TOKEN || null;
+
+function resolveVoiceDeviceUserId(req) {
+  if (!VOICE_DEVICE_TOKEN) return null;
+  const provided = req.headers['x-device-token'];
+  if (!provided || provided !== VOICE_DEVICE_TOKEN) return null;
+  const deviceId = req.body?.deviceId || 'voice-device';
+  return `voice-device:${deviceId}`;
+}
+
 async function resolveUserId(req) {
   const authHeader = req.headers.authorization || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
@@ -98,8 +118,36 @@ async function resolveUserId(req) {
   return data.user_id;
 }
 
+// Voice-side retries (voice_controller.py's _post_command, on a dropped
+// connection) resend the SAME commandId rather than a fresh one, so a
+// case where attempt 1 actually reached this route and started
+// executing but the response never made it back to the client (network
+// blip on the way out, not the way in) doesn't silently run the same
+// action twice. Short TTL -- this is only meant to catch a retry that
+// lands a few seconds later, not to be a general dedupe store.
+const RECENT_COMMAND_TTL_MS = 30 * 1000;
+const recentCommandIds = new Map(); // commandId -> timestamp
+
+function isDuplicateCommand(commandId) {
+  if (!commandId) return false; // no id supplied (e.g. other callers) -- nothing to dedupe against
+  const now = Date.now();
+  for (const [id, at] of recentCommandIds) {
+    if (now - at > RECENT_COMMAND_TTL_MS) recentCommandIds.delete(id);
+  }
+  if (recentCommandIds.has(commandId)) return true;
+  recentCommandIds.set(commandId, now);
+  return false;
+}
+
 router.post('/', async (req, res) => {
-  let userId = await resolveUserId(req);
+  // Fast, no-network path first: a trusted local voice device with the
+  // shared secret skips the Firebase/Supabase round trip entirely
+  // (this is most of what was making every command pay an extra
+  // network hop before it could even start). Falls through to the
+  // existing Firebase/Supabase/dev-bypass resolution unchanged for
+  // every other caller (MCIS web UI, mobile app, etc.) -- nothing
+  // about that path is touched.
+  let userId = resolveVoiceDeviceUserId(req) || await resolveUserId(req);
 
   if (!userId) {
     const devBypassAllowed =
@@ -112,16 +160,30 @@ router.post('/', async (req, res) => {
     }
   }
 
-  const { message, deviceId } = req.body;
+  const { message, deviceId, commandId } = req.body;
 
   if (!message) {
     return res.status(400).json({ error: 'message required' });
   }
 
+  if (isDuplicateCommand(commandId)) {
+    console.warn(`[commandRoute] Duplicate commandId ${commandId} within ${RECENT_COMMAND_TTL_MS}ms, skipping re-execution.`);
+    return res.json({ type: 'chat', message: 'Already on it -- one sec.' });
+  }
+
   const fastMatch = tryFastPath(message);
   const intent = fastMatch
     ? { type: 'action', action: fastMatch.action, payload: fastMatch.payload }
-    : await (async () => { const t0 = Date.now(); const r = await classifyIntent(message); console.log('[TIMING] classifyIntent:', Date.now() - t0, 'ms'); return r; })();
+    : await (async () => {
+        const t0 = Date.now();
+        // Give the classifier the user's current task context (if any) so
+        // a follow-up like "make it under 7000" or "only ones near the
+        // beach" gets folded into a complete, standalone goal instead of
+        // being classified blind -- see taskContext.js.
+        const r = await classifyIntent(message, taskContext.toPromptContext(userId));
+        console.log('[TIMING] classifyIntent:', Date.now() - t0, 'ms');
+        return r;
+      })();
   if (intent.type === 'chat') {
     return res.json({
       type: 'chat',
@@ -142,6 +204,11 @@ router.post('/', async (req, res) => {
   if (intent.action === 'run_goal') {
     try {
       const started = taskPlanner.startPlanAsync(userId, intent.payload.goal);
+      // Record this as the user's active task -- taskPlanner.js updates
+      // it further as the plan produces results, so a LATER, separate
+      // command ("make it cheaper", "open the first one") can reference
+      // this goal/its results without repeating the whole request.
+      taskContext.setActiveGoal(userId, intent.payload.goal, started.planId || null);
       await logAction(userId, 'run_goal', intent.payload, started);
       return res.json(started);
     } catch (err) {
@@ -163,7 +230,7 @@ router.post('/', async (req, res) => {
     const targetResource =
       intent.payload.parameters?.path ||
       intent.payload.parameters?.url ||
-      intent.payload.parameters?.appName ||
+      intent.payload.parameters?.app ||
       intent.action;
     const permitted = await isPermitted(userId, targetResource);
 

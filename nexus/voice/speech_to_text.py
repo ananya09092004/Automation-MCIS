@@ -3,6 +3,7 @@ import speech_recognition as sr
 from voice.models import VoiceCommand
 from voice.audio_source import SharedMicrophone
 from voice import transcription
+from voice.wake_word import _is_probably_silence
 
 RECOGNITION_LANGUAGE = "en-IN"
 
@@ -19,12 +20,21 @@ _TRAILING_INCOMPLETE_WORDS = {
 }
 
 
-def _looks_incomplete(text: str, spoken_seconds: float) -> bool:
+def _ends_mid_thought(text: str) -> bool:
+    """True if the text's last word is a trailing/conjunction word that
+    strongly suggests the speaker wasn't actually finished. Split out
+    from _looks_incomplete() so wake_word.py can reuse this text-only
+    half of the check for a bundled "hey nexus <command>" capture, where
+    there's no separate spoken_seconds figure available."""
     stripped = (text or "").strip()
     if not stripped:
         return True
     last_word = stripped.split()[-1].lower().rstrip(".,?!")
-    if last_word in _TRAILING_INCOMPLETE_WORDS:
+    return last_word in _TRAILING_INCOMPLETE_WORDS
+
+
+def _looks_incomplete(text: str, spoken_seconds: float) -> bool:
+    if _ends_mid_thought(text):
         return True
     # Very short utterances are often the start of a word that got cut off
     # rather than a genuine one-word command.
@@ -66,7 +76,7 @@ class SpeechRecognizer:
     def __init__(self):
         self.recognizer = sr.Recognizer()
         self.recognizer.pause_threshold = 2
-        self.recognizer.energy_threshold = 300
+        self.recognizer.energy_threshold = SharedMicrophone.get_energy_threshold()
         self.recognizer.dynamic_energy_threshold = True
 
     def listen(self):
@@ -111,7 +121,10 @@ class SpeechToText:
     def __init__(self, source=None):
         self.recognizer = sr.Recognizer()
         self.recognizer.pause_threshold = 1.0
-        self.recognizer.energy_threshold = 300
+        # Seed from the room-calibrated value (see audio_source.py)
+        # instead of a hardcoded guess -- dynamic_energy_threshold still
+        # adjusts further from here as it listens.
+        self.recognizer.energy_threshold = SharedMicrophone.get_energy_threshold()
         self.recognizer.dynamic_energy_threshold = True
         # If a shared source is passed in (from VoiceController), use it
         # directly. Otherwise fall back to the shared-mic helper so we
@@ -146,6 +159,15 @@ class SpeechToText:
             raise
         except Exception as error:
             print(f"[Nexus Voice] Mic read error, will keep listening: {error}")
+            return None, None
+
+        if _is_probably_silence(audio, self.recognizer.energy_threshold):
+            # Same reasoning as wake_word.py -- don't spend a Whisper
+            # call on a clip that's near-silent by its own measured
+            # loudness. Only applied to this first capture, not
+            # continuation pieces below, since a genuine mid-command
+            # continuation after a thinking pause can legitimately be
+            # quieter and shouldn't be judged the same way.
             return None, None
 
         pieces = [audio]

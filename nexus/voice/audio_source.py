@@ -25,9 +25,25 @@ import time
 import speech_recognition as sr
 
 
+# Fallback energy_threshold used until real calibration has run (or if
+# calibration fails). This is only ever a starting guess.
+_DEFAULT_ENERGY_THRESHOLD = 300
+
+
 class SharedMicrophone:
     _source = None
     _calibrated = False
+    # NOTE: this used to be computed and then thrown away -- calibration
+    # ran on a throwaway sr.Recognizer() whose energy_threshold never
+    # reached WakeWordDetector or SpeechToText, which each built their
+    # own Recognizer hardcoded to 300. That meant the room calibration
+    # had zero effect: on a quiet room where the real noise floor is
+    # e.g. 120, or a noisy one where it's e.g. 600, everything still ran
+    # at the generic guess of 300 -- one of the drivers of both missed
+    # speech starts and "heard something" on plain background noise.
+    # This value is now saved here so every recognizer built afterwards
+    # can pick up the real calibrated number.
+    _energy_threshold = _DEFAULT_ENERGY_THRESHOLD
 
     @classmethod
     def get(cls):
@@ -41,11 +57,21 @@ class SharedMicrophone:
                 try:
                     calibrator = sr.Recognizer()
                     calibrator.adjust_for_ambient_noise(mic, duration=1)
+                    cls._energy_threshold = calibrator.energy_threshold
+                    print(f"[Nexus Voice] Mic calibrated, energy_threshold={cls._energy_threshold:.0f}")
                 except Exception as error:
-                    print(f"[Nexus Voice] Ambient noise calibration skipped: {error}")
+                    print(f"[Nexus Voice] Ambient noise calibration skipped, using default: {error}")
                 cls._calibrated = True
 
         return cls._source
+
+    @classmethod
+    def get_energy_threshold(cls) -> float:
+        """The room-calibrated energy_threshold (or the generic default
+        if calibration hasn't run yet/failed). Every Recognizer built
+        for the shared mic should seed itself from this instead of
+        hardcoding a guessed constant."""
+        return cls._energy_threshold
 
     @classmethod
     def settle(cls, seconds: float = 0.4):
@@ -80,3 +106,4 @@ class SharedMicrophone:
                 pass
             cls._source = None
             cls._calibrated = False
+            cls._energy_threshold = _DEFAULT_ENERGY_THRESHOLD

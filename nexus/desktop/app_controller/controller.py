@@ -17,6 +17,21 @@ class AppController:
 
     def open_app(self, app_name: str) -> bool:
 
+        # Was: always launched a brand-new process regardless of whether
+        # the app was already running -- this is the root cause of
+        # "duplicate actions"/"broken app switching": saying "open
+        # Chrome" (or the router falling back to open_app for what was
+        # really a "switch to Chrome" request) while Chrome was already
+        # open spawned a SECOND Chrome instance/window instead of
+        # switching to the existing one. fastPath.js's own comment
+        # ("open_app() does its own dynamic discovery of whether an app
+        # is running") documents this as the intended behavior -- it
+        # just wasn't actually implemented here. If the app already has
+        # a window, just focus it; only launch a new process when it
+        # genuinely isn't running.
+        if self.is_running(app_name) and self._bring_to_front(app_name, timeout=2.0):
+            return True
+
         app = self.discovery.discover(app_name)
 
         if not app.installed:

@@ -1,5 +1,6 @@
 from playwright.sync_api import sync_playwright
 from pathlib import Path
+import atexit
 
 
 class BrowserEngine:
@@ -10,6 +11,7 @@ class BrowserEngine:
         self.browser = None
         self.context = None
         self.storage_state_path = None
+        self._atexit_registered = False
 
     def start(
 
@@ -66,6 +68,24 @@ class BrowserEngine:
             Path(storage_state_path).parent.mkdir(parents=True, exist_ok=True)
         options = {"storage_state": storage_state_path} if storage_state_path and Path(storage_state_path).is_file() else {}
         self.context = self.browser.new_context(**options)
+
+        if not self._atexit_registered:
+            # Safety net for the case the process is interrupted
+            # (Ctrl+C, terminal closed) without an explicit "close
+            # browser"/stop() ever running -- without this, any login
+            # that happened during this run (e.g. the user just signed
+            # into Gmail) would never get written to the session file,
+            # so requirement 4 ("on stop/close, save session state")
+            # wouldn't actually hold for the common "just closed the
+            # window" case. Registered once per engine instance; safe
+            # to call even if stop() already ran (it's a no-op then).
+            def _safe_stop_at_exit():
+                try:
+                    self.stop()
+                except Exception:
+                    pass  # interpreter is already shutting down -- never raise from atexit
+            atexit.register(_safe_stop_at_exit)
+            self._atexit_registered = True
 
         return self.browser
 

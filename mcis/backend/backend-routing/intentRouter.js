@@ -39,6 +39,45 @@ const SYSTEM_PROMPT = `You are MCIS's intent classifier. Given a user message, d
 - "chat": a question or conversation, no laptop action needed
 - "action": user wants something done on their laptop, in a browser, or via MCIS automation
 
+SEMANTIC MATCHING — READ THIS FIRST: users never learn or memorize exact
+Nexus phrasing. They speak naturally — one word, a full sentence, an
+indirect request, a synonym, a different word order, Hinglish, whatever
+comes to mind. Your job is to recognize the underlying MEANING and map
+it to the closest matching action below, not to pattern-match specific
+wording. All of the following mean the exact same thing and MUST
+classify to the same action + payload: "new tab", "open another tab",
+"I need a fresh tab", "give me one more tab", "ek aur tab khol do". The
+same principle applies to every other action — open/switch/focus/close/
+minimize/maximize/restore an app or window, start a new document/file,
+copy/paste, navigate somewhere, etc. — regardless of how indirectly or
+conversationally it's phrased. If the request clearly wants SOMETHING
+done (even if you have to infer which specific action), prefer picking
+the closest matching action over "chat" — only use "chat" when the
+message is genuinely a question/conversation with no actionable intent
+at all. Example: "I need a blank document in Notepad" / "start
+something new in Notepad" / "make a new file in Notepad" all mean:
+Notepad should end up with a blank/new document open — if Notepad isn't
+running, that's "open_app"; if it's already running, that's "hotkey"
+with ctrl+n (Notepad's new-document shortcut) targeting the Notepad
+window. Reason about the actual outcome the user wants, not the words
+they used to describe it. IMPORTANT: never use "create_file" for this —
+create_file only silently writes an empty file to disk, it does NOT
+open or display anything, so it's the wrong action whenever the user
+wants to actually SEE/use a new document, not just have a file exist.
+
+"NEW WINDOW" (any app, including a browser) works the same way as "new
+document" above, and by the same reasoning applies to ANY phrasing —
+"open another Chrome window", "I need a fresh window", "start a new
+VS Code window", etc.: if the app isn't running, "open_app" already
+gives a fresh window on its own. If it's already running, use "hotkey"
+with ctrl+n targeting that app's window (this is the real OS-level
+new-window shortcut for the vast majority of Windows apps, including
+Chrome, Notepad, VS Code, and Explorer) — there is no separate
+"new_window" action name, so don't invent one; hotkey ctrl+n is the
+correct mechanism. This is different from "new tab", which for a
+browser is the dedicated "new_tab" nexus action (opens a tab in the
+SAME window, not a new OS window).
+
 If "action", classify further into one of two shapes:
 
 1. NEXUS ACTIONS — desktop control (apps, files, folders, mouse, keyboard, windows, office docs) or
@@ -49,7 +88,7 @@ If "action", classify further into one of two shapes:
 
    IMPORTANT distinction: if the user wants to OPEN/LAUNCH their email (e.g. "email kholo", "open
    my email", "open gmail", "mera email account kholo"), classify as a NEXUS action — use
-   "open_app" with parameters {appName: "..."} for a desktop client (Outlook), or "navigate" with
+   "open_app" with parameters {app: "..."} for a desktop client (Outlook), or "navigate" with
    parameters {url: "https://mail.google.com"} for a browser. Only classify as the MCIS native
    "draftEmail" action (below) if the user explicitly wants an email DRAFTED/WRITTEN/COMPOSED
    (e.g. "email likh do", "draft an email to...", "compose an email"). The single word "email" by
@@ -79,6 +118,21 @@ If "action", classify further into one of two shapes:
        "value": "<primary value if any, e.g. text to type or fill>"
      }
    }
+
+   EXACT KEY NAMES Nexus's executor requires (get these wrong and the action
+   fails to execute even though the intent was understood correctly —
+   these are not optional/flexible, they're a fixed contract):
+     open_app, close_app, restart_app, focus_app, minimize_app, maximize_app,
+       switch_to_app  → parameters: { "app": "<app name>" }   (NOT "appName")
+     focus_window, maximize_window, minimize_window, close_window,
+       window_exists  → parameters: { "title": "<window title>" }   (NOT "window_title")
+     hotkey           → parameters: { "keys": ["ctrl", "n"] }   (an array of key names)
+     press_key        → parameters: { "key": "<single key>" }
+     start_process, run_terminal → parameters: { "command": "<command>" }
+     create_file, delete_file, read_file, verify_path, create_folder,
+       delete_folder, list_folder, capture_screen, capture_active_window
+                       → parameters: { "path": "<file or folder path>" }
+
 2. MULTI-STEP GOALS — if the request needs SEVERAL different actions chained together to
    complete (e.g. "order X online", "book a cab", "fill and submit this form", "email X and
    also add a reminder") — classify as action "run_goal" with payload { "goal": "<the user's
@@ -94,10 +148,26 @@ If "action", classify further into one of two shapes:
 Respond ONLY with JSON, no markdown, no explanation:
 { "type": "chat" | "action", "action": "<actionType or null>", "payload": {} }`;
 
-async function classifyIntent(userMessage) {
+async function classifyIntent(userMessage, context = null) {
   let result;
   try {
-    const prompt = `${SYSTEM_PROMPT}\n\nUser message: "${userMessage}"`;
+    // context comes from taskContext.js (commandRoute.js passes it in) --
+    // the active goal/constraints and last shown results from the user's
+    // CURRENT task, if any. Without this, a follow-up like "make it under
+    // 7000" or "open the first one" is genuinely ambiguous to classify in
+    // isolation -- Gemini has no way to know what "it"/"the first one"
+    // refers to. When context is null (fresh conversation, nothing
+    // active), this adds nothing to the prompt.
+    const contextBlock = context
+      ? `\n\nCURRENT TASK CONTEXT (use this to resolve follow-ups, pronouns like "it"/"this"/
+"that"/"the first one", and constraint changes like "make it cheaper" -- if the user's message
+is a continuation/modification of this context rather than a brand-new request, classify it as
+"run_goal" with a COMPLETE, standalone goal string that folds in the update, e.g. previous goal
+"Find hotels in Goa under 5000" + user says "make it under 7000" -> goal: "Find hotels in Goa
+under 7000". If the message is clearly unrelated to this context, ignore the context entirely):
+${JSON.stringify(context)}`
+      : '';
+    const prompt = `${SYSTEM_PROMPT}${contextBlock}\n\nUser message: "${userMessage}"`;
     result = await generateContent(prompt);
   } catch (err) {
     // Gemini quota/rate-limit/network failure — degrade gracefully instead

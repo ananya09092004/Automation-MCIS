@@ -205,7 +205,16 @@ app.use(errorHandler);
 // ================================
 // Server Start
 // ================================
-const PORT = process.env.PORT || 5000;
+// Was defaulting to 5000, while every client that talks to this server
+// locally (nexus/voice/voice_controller.py's MCIS_COMMAND_URL,
+// mcis-agent-final/pairing.js's BACKEND_HTTP_URL default) hardcoded an
+// assumption of 5051. Unless PORT=5051 was explicitly set in this
+// service's .env, the backend came up on 5000 and every one of those
+// clients got ECONNREFUSED. Defaulting to 5051 here makes the whole
+// stack agree out-of-the-box; PORT env var still overrides it the same
+// as before (e.g. hosted deployments that set PORT themselves are
+// unaffected).
+const PORT = process.env.PORT || 5051;
 
 const server = http.createServer(app);
 attachAgentSocket(server);

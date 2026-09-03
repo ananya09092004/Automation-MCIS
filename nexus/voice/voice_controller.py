@@ -1,22 +1,55 @@
+import os
 import time
 import threading
+import uuid
 import keyboard
 import requests
 
 from voice.wake_word import WakeWordDetector
-from voice.speech_to_text import SpeechToText
+from voice.speech_to_text import SpeechToText, _ends_mid_thought
 from voice.text_to_speech import TextToSpeech
 from voice.lang_detect import ACK_PHRASES, detect_language, get_phrase
 from voice.audio_source import SharedMicrophone
 from voice.sound_cue import play_wake_beep
+from voice import local_fast_path
 
 
-MCIS_COMMAND_URL = "http://localhost:5051/api/command"
-MCIS_GRANT_URL = "http://localhost:5051/api/permissions/grant"
-MCIS_EMERGENCY_STOP_URL = "http://localhost:5051/api/emergency/stop"
-MCIS_EMERGENCY_RESUME_URL = "http://localhost:5051/api/emergency/resume"
-MCIS_GOAL_STATUS_URL = "http://localhost:5051/api/command/goal/{plan_id}/status"
-MCIS_GOAL_ANSWER_URL = "http://localhost:5051/api/command/goal/{plan_id}/answer"
+# Was hardcoded to "http://localhost:5051" with no way to override it.
+# mcis/backend/server.js's OWN default (process.env.PORT || 5000) didn't
+# actually match this -- unless PORT=5051 was set in mcis/backend/.env,
+# the backend came up on 5000 while every client here assumed 5051,
+# which is exactly the "ECONNREFUSED :5051" seen in testing. server.js's
+# default has been fixed to 5051 to match (see server.js), and this is
+# now also overridable via env instead of being a second hardcoded
+# source of truth.
+MCIS_BASE_URL = os.getenv("MCIS_BACKEND_HTTP_URL", "http://localhost:5051")
+MCIS_COMMAND_URL = f"{MCIS_BASE_URL}/api/command"
+MCIS_GRANT_URL = f"{MCIS_BASE_URL}/api/permissions/grant"
+MCIS_EMERGENCY_STOP_URL = f"{MCIS_BASE_URL}/api/emergency/stop"
+MCIS_EMERGENCY_RESUME_URL = f"{MCIS_BASE_URL}/api/emergency/resume"
+MCIS_GOAL_STATUS_URL = MCIS_BASE_URL + "/api/command/goal/{plan_id}/status"
+MCIS_GOAL_ANSWER_URL = MCIS_BASE_URL + "/api/command/goal/{plan_id}/answer"
+
+# Sent as the X-Device-Token header on every request to the backend so
+# commandRoute.js can authenticate this voice listener WITHOUT a
+# Firebase/Supabase round trip (see commandRoute.js's
+# resolveVoiceDeviceUserId). Must match NEXUS_VOICE_DEVICE_TOKEN in
+# mcis/backend's .env. If unset, requests simply omit the header and
+# fall back to the backend's existing auth path exactly as before --
+# nothing breaks if this isn't configured, it's a pure speed opt-in.
+VOICE_DEVICE_TOKEN = os.getenv("NEXUS_VOICE_DEVICE_TOKEN")
+
+# (connect_timeout, read_timeout) instead of a single number. A single
+# `timeout=60` blocks for up to 60s on EITHER phase -- but a dead/
+# unreachable backend should fail in a couple seconds, not up to a
+# minute; only the read phase (waiting for the LLM/agent to actually
+# respond) legitimately needs a long allowance.
+COMMAND_TIMEOUT = (5, 60)
+QUICK_TIMEOUT = (5, 15)
+
+
+def _request_headers():
+    return {"X-Device-Token": VOICE_DEVICE_TOKEN} if VOICE_DEVICE_TOKEN else {}
 
 # How often to check on a multi-step task's progress, and how long to
 # keep checking before giving up and telling the user it's taking a
@@ -81,7 +114,7 @@ class VoiceController:
                 # task that's already running, not just muting future
                 # listening.
                 try:
-                    requests.post(MCIS_EMERGENCY_STOP_URL, timeout=5)
+                    requests.post(MCIS_EMERGENCY_STOP_URL, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                 except requests.exceptions.RequestException as error:
                     print(f"[HOTKEY] Could not reach MCIS to stop the current task: {error}")
                 self._speak("Muted. Ctrl plus N se wapas jagao.")
@@ -96,7 +129,7 @@ class VoiceController:
                 # after a single Ctrl+M, since emergency-stop doesn't
                 # clear itself.
                 try:
-                    requests.post(MCIS_EMERGENCY_RESUME_URL, timeout=5)
+                    requests.post(MCIS_EMERGENCY_RESUME_URL, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                 except requests.exceptions.RequestException as error:
                     print(f"[HOTKEY] Could not reach MCIS to resume automation: {error}")
                 self._speak("Wapas sun rahi hoon.")
@@ -117,7 +150,7 @@ class VoiceController:
         # again -- prevents Nexus's own voice (speaker-to-mic echo) or
         # residual audio from that instant being mistaken for the next
         # command.
-        SharedMicrophone.settle(0.4)
+        SharedMicrophone.settle(0.6)
 
     def _is_affirmative(self, answer: str) -> bool:
         answer = (answer or "").lower().strip()
@@ -233,13 +266,22 @@ class VoiceController:
         return get_phrase("done", lang)
 
     def _post_command(self, command: str):
+        # One id per logical command, reused across retry attempts (not
+        # regenerated per attempt) -- lets the backend recognize "this is
+        # attempt 2 of the same command" and skip re-executing it if
+        # attempt 1 actually went through server-side but the response
+        # itself got lost (the case a bare connection-retry can't tell
+        # apart from "attempt 1 never arrived at all"). See
+        # commandRoute.js's short-TTL commandId check.
+        command_id = str(uuid.uuid4())
         last_error = None
         for attempt in range(1, COMMAND_RETRY_ATTEMPTS + 1):
             try:
                 response = requests.post(
                     MCIS_COMMAND_URL,
-                    json={"message": command, "deviceId": DEVICE_ID},
-                    timeout=60,
+                    json={"message": command, "deviceId": DEVICE_ID, "commandId": command_id},
+                    headers=_request_headers(),
+                    timeout=COMMAND_TIMEOUT,
                 )
                 return response.json()
             except requests.exceptions.ConnectionError as error:
@@ -277,7 +319,7 @@ class VoiceController:
             elapsed += PLAN_POLL_INTERVAL_SECONDS
 
             try:
-                response = requests.get(status_url, timeout=15)
+                response = requests.get(status_url, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                 snapshot = response.json()
             except requests.exceptions.RequestException as error:
                 print(f"[Nexus Voice] Plan status check failed, retrying: {error}")
@@ -299,7 +341,7 @@ class VoiceController:
                 if not approved:
                     return get_phrase("cancelled", lang)
                 try:
-                    requests.post(MCIS_GRANT_URL, json={"resource": f"plan:{plan_id}"}, timeout=60)
+                    requests.post(MCIS_GRANT_URL, json={"resource": f"plan:{plan_id}"}, headers=_request_headers(), timeout=COMMAND_TIMEOUT)
                 except requests.exceptions.RequestException as error:
                     print("GRANT ERROR:", error)
                     return get_phrase("grant_failed", lang)
@@ -310,7 +352,7 @@ class VoiceController:
                 answer = self._ask_clarification(question, lang)
                 try:
                     answer_url = MCIS_GOAL_ANSWER_URL.format(plan_id=plan_id)
-                    requests.post(answer_url, json={"answer": answer or ""}, timeout=15)
+                    requests.post(answer_url, json={"answer": answer or ""}, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                 except requests.exceptions.RequestException as error:
                     print("CLARIFICATION SUBMIT ERROR:", error)
                     return get_phrase("connection_failed", lang)
@@ -344,7 +386,8 @@ class VoiceController:
                     grant_res = requests.post(
                         MCIS_GRANT_URL,
                         json={"resource": resource},
-                        timeout=60,
+                        headers=_request_headers(),
+                        timeout=COMMAND_TIMEOUT,
                     )
                     grant_res.raise_for_status()
                     data = grant_res.json()
@@ -395,6 +438,20 @@ class VoiceController:
 
         return self._send_to_mcis(command, lang, data=result_holder.get("data"))
 
+    def _try_local_fast_path(self, command: str):
+        """Try to handle a simple app-control command entirely locally
+        (no MCIS/LLM/network round trip at all -- not even the fast-path
+        HTTP hop). Returns a spoken result string, or None if this
+        command should go through the normal MCIS path unchanged. Any
+        unexpected error here is treated the same as "not handled" --
+        this must never be able to swallow a command MCIS could have
+        handled."""
+        try:
+            return local_fast_path.try_execute(command)
+        except Exception as error:
+            print(f"[Nexus Voice] Local fast-path errored, falling back to MCIS: {error}")
+            return None
+
     def run(self):
         print("Nexus Voice Started...")
         while True:
@@ -417,6 +474,17 @@ class VoiceController:
                 continue
 
             command = trailing_command.strip() if trailing_command else None
+
+            if command and _ends_mid_thought(command):
+                # The wake-word capture's own pause_threshold cut this
+                # off right on a conjunction/trailing word (e.g. user
+                # said "hey nexus... open chrome and" with a thinking
+                # pause before finishing) -- don't dispatch a command
+                # that's very likely truncated. Fall through to a proper
+                # beep + full listen instead, which has real
+                # continuation-grace endpointing built in.
+                print(f"[Nexus Voice] Bundled command looked cut off, re-listening properly: {command!r}")
+                command = None
 
             if command:
                 print("USER (with wake word):", command)
@@ -461,7 +529,19 @@ class VoiceController:
                             self._speak(get_phrase("trouble_hearing", "hi"))
                             command = None
                             break
-                        self._speak(get_phrase("retry", "hi"))
+                        if consecutive_empty_listens > 1:
+                            # Was speaking "retry" on EVERY empty listen,
+                            # including the very first one -- right after
+                            # Nexus finishes speaking a successful result,
+                            # a single ambient-noise blip that correctly
+                            # gets silence-gated (nothing was actually
+                            # said) would immediately trigger an audible
+                            # "Sorry, please repeat" before the user even
+                            # had a chance to start their next command.
+                            # One silent grace attempt first is a much
+                            # more natural pause; only speak up from the
+                            # second consecutive miss onward.
+                            self._speak(get_phrase("retry", "hi"))
                         continue
 
                     consecutive_empty_listens = 0
@@ -488,7 +568,7 @@ class VoiceController:
 
                 if self._is_resume_command(command):
                     try:
-                        requests.post(MCIS_EMERGENCY_RESUME_URL, timeout=10)
+                        requests.post(MCIS_EMERGENCY_RESUME_URL, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                     except requests.exceptions.RequestException as error:
                         print("RESUME REQUEST ERROR:", error)
                     self._speak(get_phrase("resumed", lang))
@@ -497,7 +577,7 @@ class VoiceController:
 
                 if self._is_emergency_stop(command):
                     try:
-                        requests.post(MCIS_EMERGENCY_STOP_URL, timeout=10)
+                        requests.post(MCIS_EMERGENCY_STOP_URL, headers=_request_headers(), timeout=QUICK_TIMEOUT)
                     except requests.exceptions.RequestException as error:
                         print("EMERGENCY STOP REQUEST ERROR:", error)
                     self._speak(get_phrase("emergency_stop", lang))
@@ -508,6 +588,13 @@ class VoiceController:
                     self._speak(get_phrase("sleep", lang))
                     command = None
                     break
+
+                local_response = self._try_local_fast_path(command)
+                if local_response is not None:
+                    print("LOCAL FAST-PATH:", local_response)
+                    self._speak(local_response)
+                    command = None
+                    continue
 
                 response_text = self._dispatch_command(command, lang)
                 print("MCIS:", response_text)

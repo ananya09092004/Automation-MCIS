@@ -1,10 +1,13 @@
 const { generateContent } = require('./geminiClient');
 const { sendCommandToNexus } = require('./nexusBridge');
 const { NEXUS_ACTIONS } = require('./intentRouter');
+const taskContext = require('./taskContext');
 
 const SENSITIVE_KEYWORDS = [
   'password', 'card', 'cvv', 'otp', 'pay', 'checkout',
-  'confirm order', 'place order', 'submit payment', 'login'
+  'confirm order', 'place order', 'submit payment', 'login',
+  'book', 'booking', 'reserve', 'reservation', 'purchase', 'buy',
+  'delete', 'transfer money', 'send payment', 'wire transfer',
 ];
 
 const MAX_STEPS = 15;
@@ -41,7 +44,7 @@ function snapshot(plan) {
 }
 
 function isSensitiveStep(step) {
-  const actionText = String(step.action || '').toLowerCase();
+  const actionText = String(step.action || '').toLowerCase().replace(/_/g, ' ');
   const valuesText = JSON.stringify(step.payload || {}).toLowerCase();
   const combined = `${actionText} ${valuesText}`;
   return SENSITIVE_KEYWORDS.some(word => {
@@ -139,6 +142,20 @@ write a paragraph about X"):
   nothing else) — this is exactly the case to use needs_clarification (below) and ask what to
   write, rather than inventing content out of nothing.
 
+STARTING A "NEW DOCUMENT/FILE" IN AN APP (e.g. "notepad me nayi file banao", "start a fresh
+document in notepad", "I need a blank document"): the app itself must end up showing a new/blank
+document — NEVER use "create_file" for this, it only silently writes an empty file to disk and
+opens nothing. If the app isn't running yet, "open_app" alone already gives a fresh document. If
+it's already running, use "hotkey" with parameters: { "keys": ["ctrl", "n"] } targeting that app's
+window instead.
+
+OPENING A "NEW WINDOW" (any app, including a browser, e.g. "open another chrome window", "naya
+window kholo"): same mechanism as above — if the app isn't running, "open_app" already gives a
+fresh window; if it's already running, "hotkey" with parameters: { "keys": ["ctrl", "n"] } is the
+real OS-level new-window shortcut for the vast majority of Windows apps. There is no separate
+"new_window" nexus action, so don't invent one. This differs from "new tab" in a browser, which is
+its own dedicated "new_tab" action (opens a tab in the SAME window, not a new OS window).
+
 ASKING THE USER FOR MORE INFO (mid-goal clarification):
 - If you cannot make progress because a REQUIRED piece of information is missing and cannot be
   inferred (e.g. "book a table" with no restaurant name, "email X" with no recipient) — do NOT
@@ -218,9 +235,19 @@ async function runLoop(plan) {
     }
 
     let result = await callNexusWithTimeout(next.action, next.payload);
-    const isVerified = result.evidence?.verified !== false;
 
-    if (!result.success || !isVerified) {
+    // Was: retried on `!result.success || !isVerified` -- meaning an
+    // action that ACTUALLY SUCCEEDED but whose verification signal was
+    // merely ambiguous (evidence.verified came back false/unclear even
+    // though the click/submit genuinely happened) got re-executed. For
+    // a non-idempotent step -- "click Send", "submit payment", "place
+    // order", saving over a file -- that's a real duplicate-execution
+    // risk: the user's email/order/payment could go through twice.
+    // Only retry on a genuine, outright failure (the action itself
+    // reported it did not happen) -- an ambiguous-but-successful result
+    // is recorded as-is and the planner moves on, rather than gambling
+    // on a second attempt of something that may have already worked.
+    if (!result.success) {
       await new Promise(r => setTimeout(r, 1500));
       result = await callNexusWithTimeout(next.action, next.payload);
     }
@@ -232,6 +259,17 @@ async function runLoop(plan) {
       evidence: result.evidence ? { verified: result.evidence.verified } : null,
       data: result.data || null,
     });
+
+    // If this step's success returned structured, comparable results
+    // (e.g. read_tables returning search-result rows), make them
+    // available to a LATER, separate command ("show me the first one",
+    // "compare that with the second") via the task context layer --
+    // otherwise entity references like "the first one" have nothing to
+    // resolve against once this HTTP request/response is over.
+    if (result.success && Array.isArray(result.data) && result.data.length > 0) {
+      taskContext.setResults(plan.userId, result.data);
+    }
+    taskContext.recordAction(plan.userId, next.action, next.payload);
 
     if (!result.success) {
       plan.status = 'error';

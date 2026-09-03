@@ -25,6 +25,19 @@ class BrowserPlatformExecutor:
     def start(self, browser: str = "chromium", headless: bool = False,
               storage_state_path: str | None = None) -> None:
         if self.controller.page is None:
+            if storage_state_path is None:
+                # No session explicitly requested -- auto-load the
+                # "default" persistent session if one exists (login
+                # carries over across separate Nexus runs, e.g. Gmail
+                # already authenticated), otherwise start fresh AND
+                # still point at this path so a first-time login gets
+                # saved automatically on stop() (see requirement 5:
+                # log in once, it persists after that). Explicit
+                # callers (save_session/load_session, or any action
+                # that passes its own browser_options.storage_state_path)
+                # are completely unaffected -- this only fills in the
+                # gap when nothing was specified.
+                storage_state_path = self.sessions.default_path()
             self.controller.start(browser=browser, headless=headless, storage_state_path=storage_state_path)
 
     def stop(self) -> None:
