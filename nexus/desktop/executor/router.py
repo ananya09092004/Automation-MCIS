@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from desktop.app_controller.controller import AppController
 from desktop.file_manager import FileManager
 from desktop.folder_manager import FolderManager
@@ -116,7 +118,23 @@ class ActionRouter:
             return self.files.read_file(action["path"])
 
         elif name == "write_file":
-            return self.files.write_file(action["path"], action.get("content", action.get("text", "")))
+            # Was: silently overwrote any existing file's content with
+            # zero signal anywhere that this happened -- a genuinely
+            # important document could be clobbered with no trace. This
+            # doesn't block the write (that would need a confirmation
+            # UX/contract change across the risk/verification layers,
+            # out of scope for a minimal fix) -- it reports the fact via
+            # `.overwrote_existing_content` on the result, so a future
+            # verification/observability layer has something real to
+            # check instead of nothing. `.success` is still a plain bool
+            # attribute, so existing generic success detection
+            # (`getattr(data, "success", data is not False)` in
+            # platform_executor.py) keeps working unchanged for this and
+            # every other action.
+            path = action["path"]
+            had_content = self.files.file_has_content(path)
+            written = self.files.write_file(path, action.get("content", action.get("text", "")))
+            return SimpleNamespace(success=written, overwrote_existing_content=bool(had_content and written))
 
         elif name == "search_file":
             return self.files.search_file(action["directory"], action["query"])

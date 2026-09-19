@@ -121,59 +121,116 @@ def _confidence_from_segments(segments):
         return None
 
 
-def transcribe(audio, google_recognizer, google_language="en-IN"):
-    """
-    Transcribe an sr.AudioData capture.
-
-    Returns (text, confidence):
-      - text: transcribed string, or None if nothing could be recognized
-        by either engine
-      - confidence: float 0..1 when Groq/Whisper succeeded and returned
-        usable segment data, otherwise None (unknown -- e.g. Google
-        fallback was used, which has no confidence signal)
-    """
-    client = _get_groq_client()
-
-    if client is not None:
-        try:
-            wav_bytes = audio.get_wav_data()
-            result = client.audio.transcriptions.create(
-                file=("command.wav", wav_bytes),
-                model="whisper-large-v3-turbo",
-                response_format="verbose_json",
-                # Force English/Romanized output so downstream keyword
-                # matching (stop phrases, trailing-word heuristics, etc.,
-                # all written in Latin script) keeps working exactly as
-                # before -- auto-detect could switch to Devanagari script
-                # for Hindi speech and silently break that matching.
-                language="en",
-            )
-            text = (getattr(result, "text", "") or "").strip()
-            if text:
-                confidence = _confidence_from_segments(getattr(result, "segments", None))
-                normalized = text.lower().strip(" .!?")
-
-                low_confidence = confidence is not None and confidence < _LOW_CONFIDENCE_DISCARD
-                unconvincing_filler = normalized in _HALLUCINATION_PHRASES and (
-                    confidence is None or confidence < _HALLUCINATION_PHRASE_DISCARD
-                )
-
-                if low_confidence or unconvincing_filler:
-                    # Almost certainly noise/silence, not something the
-                    # user actually said -- treat as nothing heard rather
-                    # than acting on it or even asking the user to
-                    # confirm meaningless text.
-                    print(f"[Nexus Voice] Discarding likely hallucinated transcription: {text!r} (confidence={confidence})")
-                else:
-                    return text, confidence
-            # Empty (or discarded-as-hallucination) transcription isn't
-            # necessarily wrong -- fall through to Google as a second
-            # opinion rather than giving up immediately.
-        except Exception as error:
-            print(f"[Nexus Voice] Groq transcription failed, falling back to Google: {error}")
-
+def _transcribe_with_google(audio, google_recognizer, google_language):
+    """Only ever called for a genuine Whisper TECHNICAL_FAILURE (API/
+    network/decoding error, or Whisper unavailable/unconfigured) -- see
+    the trust-boundary comment in transcribe() below. Google's output
+    still isn't blindly trusted as a command: it flows back through the
+    exact same downstream safety nets every transcription does (the
+    pre-STT silence gate, the low-confidence confirm-back in
+    voice_controller.py) -- it just has no per-call hallucination/
+    confidence check of its own here, since the Google Web Speech API
+    doesn't return the segment-level logprob/no_speech_prob data Whisper
+    does, so there's nothing to score."""
     try:
         text = google_recognizer.recognize_google(audio, language=google_language)
         return (text, None) if text else (None, None)
     except Exception:
         return None, None
+
+
+def transcribe(audio, google_recognizer, google_language="en-IN"):
+    """
+    Transcribe an sr.AudioData capture.
+
+    TRUST BOUNDARY (this is the important part -- read before changing):
+    There are two fundamentally different reasons a transcription result
+    might not be usable, and they must NEVER be handled the same way:
+
+      1. TECHNICAL_FAILURE -- Whisper itself couldn't be asked at all:
+         the API call raised (network/provider error, decoding failure),
+         or there's no usable Groq client (unconfigured/disabled). In
+         this case we genuinely have no answer yet, so asking Google
+         instead is the right move -- it's a different question ("can
+         ANY engine transcribe this audio") than the ones below.
+
+      2. Whisper WAS asked, WAS able to answer, and gave an answer we
+         then judged unusable -- either SILENCE/NO_SPEECH (empty text)
+         or HALLUCINATION/FILTERED_SPEECH (low confidence / a known
+         filler phrase Whisper invents on quiet audio). This is NOT a
+         technical failure -- Whisper succeeded at its job and the
+         answer was "nothing was really said here". Falling through to
+         Google for a second opinion on the SAME audio in this case is
+         exactly how a deliberately-rejected hallucination gets
+         resurrected: Google, having no confidence/hallucination
+         checking of its own, can transcribe the same noise into
+         similar-looking text and that text would then be wrongly
+         accepted as a real user command. This function returns
+         (None, None) immediately for both SILENCE and HALLUCINATION
+         outcomes WITHOUT ever calling Google for that same audio again.
+
+    Returns (text, confidence):
+      - text: transcribed string, or None if nothing usable was heard
+        (covers SILENCE, HALLUCINATION, and TECHNICAL_FAILURE-with-no-
+        Google-result alike -- callers already treat None uniformly as
+        "nothing to act on")
+      - confidence: float 0..1 when Whisper succeeded and returned
+        usable segment data, otherwise None (unknown -- e.g. the Google
+        fallback path was used, which has no confidence signal)
+    """
+    client = _get_groq_client()
+
+    if client is None:
+        # No usable Whisper client at all -- this is an infrastructure/
+        # configuration condition (TECHNICAL_FAILURE), not a rejection of
+        # anything Whisper said, so Google fallback is appropriate.
+        return _transcribe_with_google(audio, google_recognizer, google_language)
+
+    try:
+        wav_bytes = audio.get_wav_data()
+        result = client.audio.transcriptions.create(
+            file=("command.wav", wav_bytes),
+            model="whisper-large-v3-turbo",
+            response_format="verbose_json",
+            # Force English/Romanized output so downstream keyword
+            # matching (stop phrases, trailing-word heuristics, etc.,
+            # all written in Latin script) keeps working exactly as
+            # before -- auto-detect could switch to Devanagari script
+            # for Hindi speech and silently break that matching.
+            language="en",
+        )
+    except Exception as error:
+        # TECHNICAL_FAILURE: the Whisper call itself blew up (network,
+        # API, decoding). We have no answer from Whisper at all here --
+        # asking Google is the correct fallback.
+        print(f"[Nexus Voice] Groq transcription technical failure, falling back to Google: {error}")
+        return _transcribe_with_google(audio, google_recognizer, google_language)
+
+    # Whisper responded successfully. Everything below is a VALID_SPEECH /
+    # SILENCE / HALLUCINATION determination on an answer Whisper actually
+    # gave us -- NOT a technical failure -- so Google is never consulted
+    # past this point for this audio, no matter what we decide below.
+    text = (getattr(result, "text", "") or "").strip()
+    if not text:
+        # SILENCE / NO_SPEECH.
+        return None, None
+
+    confidence = _confidence_from_segments(getattr(result, "segments", None))
+    normalized = text.lower().strip(" .!?")
+
+    low_confidence = confidence is not None and confidence < _LOW_CONFIDENCE_DISCARD
+    unconvincing_filler = normalized in _HALLUCINATION_PHRASES and (
+        confidence is None or confidence < _HALLUCINATION_PHRASE_DISCARD
+    )
+
+    if low_confidence or unconvincing_filler:
+        # HALLUCINATION / FILTERED_SPEECH. Almost certainly noise, not
+        # something the user actually said. Whisper succeeded and this IS
+        # its answer -- we're choosing not to trust it, which is exactly
+        # why Google must NOT be asked to re-transcribe this same audio
+        # (see the trust-boundary docstring above).
+        print(f"[Nexus Voice] Discarding likely hallucinated transcription: {text!r} (confidence={confidence})")
+        return None, None
+
+    # VALID_SPEECH.
+    return text, confidence

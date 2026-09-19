@@ -1,18 +1,47 @@
 const { generateContent } = require('./geminiClient');
 const { sendCommandToNexus } = require('./nexusBridge');
-const { NEXUS_ACTIONS } = require('./intentRouter');
+const { NEXUS_ACTIONS, SAFE_TO_REPEAT_ACTIONS } = require('./intentRouter');
 const taskContext = require('./taskContext');
-
-const SENSITIVE_KEYWORDS = [
-  'password', 'card', 'cvv', 'otp', 'pay', 'checkout',
-  'confirm order', 'place order', 'submit payment', 'login',
-  'book', 'booking', 'reserve', 'reservation', 'purchase', 'buy',
-  'delete', 'transfer money', 'send payment', 'wire transfer',
-];
+const { classifyRisk } = require('./riskModel');
 
 const MAX_STEPS = 15;
 const STEP_TIMEOUT_MS = 30000;
 const MAX_DATA_CHARS = 2500;
+
+// PASS 3: bounded recovery -- how many CONSECUTIVE step failures (across
+// possibly-different, adapted actions, not just repeats of the same one)
+// are tolerated before giving up on the goal entirely. This is the
+// "stop after bounded recovery attempts" requirement -- resets to 0 on
+// any successful step, so a goal with occasional hiccups can still run
+// its full MAX_STEPS; only a genuinely stuck goal (nothing working
+// several times in a row) aborts early instead of burning through all
+// of MAX_STEPS on a goal that's never going to succeed.
+const MAX_CONSECUTIVE_FAILURES = 3;
+
+// Bounded, generic (not workflow-specific) diagnostic action per
+// platform, used ONLY when a NON-idempotent step fails (see
+// diagnoseFailure below) -- both already exist as real Nexus actions,
+// nothing new was added to the action vocabulary for this.
+const DIAGNOSTIC_ACTION_BY_PLATFORM = {
+  browser: 'inspect_page_state',
+  desktop: 'inspect_screen_state',
+};
+
+async function diagnoseFailure(step) {
+  const platform = step.payload?.platform;
+  const diagnosticAction = DIAGNOSTIC_ACTION_BY_PLATFORM[platform];
+  if (!diagnosticAction || !NEXUS_ACTIONS.includes(diagnosticAction)) return null;
+  try {
+    const diag = await callNexusWithTimeout(diagnosticAction, { platform, parameters: {}, target: {}, value: null });
+    return diag.success ? (diag.data || diag.evidence || null) : null;
+  } catch {
+    // The diagnostic call itself failing is not fatal -- just means we
+    // proceed to replan without extra state information, same as before
+    // this pass existed.
+    return null;
+  }
+}
+
 
 const plans = new Map();
 let emergencyStopActive = false;
@@ -43,14 +72,16 @@ function snapshot(plan) {
   };
 }
 
+// PASS 2: this used to be its own separate SENSITIVE_KEYWORDS list/
+// isSensitiveStep() function, duplicating commandRoute.js's HIGH_RISK_
+// ACTIONS list. Both are now driven by the single shared riskModel.js
+// so the two execution paths (single-command and multi-step plan)
+// agree on what's risky instead of maintaining two lists that could
+// drift apart. Only RED blocks with a confirmation pause, matching the
+// old isSensitiveStep behavior exactly; YELLOW is new (see runLoop
+// below) and does not block.
 function isSensitiveStep(step) {
-  const actionText = String(step.action || '').toLowerCase().replace(/_/g, ' ');
-  const valuesText = JSON.stringify(step.payload || {}).toLowerCase();
-  const combined = `${actionText} ${valuesText}`;
-  return SENSITIVE_KEYWORDS.some(word => {
-    const pattern = new RegExp(`\\b${word.replace(/\s+/g, '\\s+')}\\b`, 'i');
-    return pattern.test(combined);
-  });
+  return classifyRisk(step.action, step.payload) === 'red';
 }
 
 function triggerEmergencyStop() {
@@ -88,7 +119,8 @@ async function decideNextStep(goal, history, clarifications = []) {
   const historyText = history.map((h, i) => {
     const evidence = h.evidence ? ` | verified: ${h.evidence.verified}` : '';
     const dataPreview = h.data ? `\n   page/data seen: ${truncate(h.data)}` : '';
-    return `${i + 1}. ${h.action} -> ${h.success ? 'success' : 'failed: ' + h.error}${evidence}${dataPreview}`;
+    const diagnosisPreview = h.diagnosis ? `\n   state after failure: ${truncate(h.diagnosis)}` : '';
+    return `${i + 1}. ${h.action} -> ${h.success ? 'success' : 'failed: ' + h.error}${evidence}${dataPreview}${diagnosisPreview}`;
   }).join('\n') || '(none yet)';
 
   const clarificationsText = clarifications.length
@@ -164,6 +196,45 @@ ASKING THE USER FOR MORE INFO (mid-goal clarification):
 - Only do this when truly stuck — prefer making a reasonable assumption and proceeding whenever
   possible, since pausing costs the user time.
 
+SOFTWARE-ENGINEERING GOALS ("find this bug and fix it", "run the tests and fix failures",
+"refactor this function", "review these changes"): compose the SAME existing file/terminal actions
+used for everything else — there is no separate coding action set. A typical sequence:
+  1. search_file / list_folder to discover the repo's actual layout — never assume file names,
+     language, or framework; look at what's actually there.
+  2. read_file on the files that look relevant to the goal (found via step 1 or named by the user).
+  3. run_terminal to discover and run the project's OWN test/build command (e.g. look for a
+     package.json/pytest.ini/Makefile via search_file first rather than guessing a fixed command
+     like "npm test" or "pytest" blindly — different repos use different tools).
+  4. Diagnose failures from the terminal output (this is exactly the "state after failure"
+     mechanism above — a failing test run's output IS the diagnostic signal for what to fix next).
+  5. write_file with the corrected content once you understand the fix — read_file first if you
+     haven't already, since write_file replaces the whole file content and you need to know what's
+     actually there to preserve everything except the actual fix.
+  6. run_terminal again to re-run tests and confirm the fix actually works — do not report success
+     without this verification step.
+  7. run_terminal with a diff/status command (e.g. discovered via the repo's own tooling) to review
+     what actually changed before considering the goal complete.
+This is not a special workflow — run_terminal is already a RED-risk action (requires the existing
+confirmation gate) and write_file is already YELLOW (already verified more carefully) exactly like
+any other use of these actions elsewhere. Do not push/commit/create external GitHub changes
+without that same existing confirmation gate; local inspection/diff/read operations don't need it.
+
+RECOVERING FROM A FAILED STEP (see "failed: ..." entries above, possibly with a "state after
+failure" line): a failure does NOT mean repeat the identical action again — it already was
+retried once automatically if that was safe to do, and you're seeing it in history precisely
+because that didn't resolve it. Instead:
+- Use the "state after failure" info (if present) to understand what actually happened — e.g. the
+  page never navigated, a dialog is blocking the page, the wrong window is focused — and choose a
+  DIFFERENT next action that addresses that actual state, not a copy of the failed one.
+- If the failure suggests a UI/selector/target problem, consider an inspection action
+  (inspect_page/inspect_page_state for browser, active_window/inspect_screen_state for desktop)
+  as your next step to re-locate the right target before trying again.
+- If two or three different approaches have all failed and you have no more reasonable ideas, use
+  needs_clarification to ask the user rather than continuing to guess indefinitely.
+- Never propose the exact same non-idempotent action (typing, clicking a submit/send/pay control,
+  deleting, downloading) a second time on unclear/ambiguous grounds — if you're not confident it's
+  safe to repeat, ask instead.
+
 Decide the SINGLE next action to make progress toward the goal, or declare the goal complete.
 Respond ONLY with JSON, no markdown:
 { "done": true|false, "needs_clarification": false, "question": null, "action": "<nexus action name or null>", "payload": { "platform": "desktop"|"browser", "parameters": {}, "target": {}, "value": null }, "reason": "<short reason>" }`;
@@ -234,23 +305,53 @@ async function runLoop(plan) {
       };
     }
 
+    const __stepStart = Date.now();
     let result = await callNexusWithTimeout(next.action, next.payload);
+    let diagnosis = null;
+    let recoveryAttempted = false;
 
-    // Was: retried on `!result.success || !isVerified` -- meaning an
-    // action that ACTUALLY SUCCEEDED but whose verification signal was
-    // merely ambiguous (evidence.verified came back false/unclear even
-    // though the click/submit genuinely happened) got re-executed. For
-    // a non-idempotent step -- "click Send", "submit payment", "place
-    // order", saving over a file -- that's a real duplicate-execution
-    // risk: the user's email/order/payment could go through twice.
-    // Only retry on a genuine, outright failure (the action itself
-    // reported it did not happen) -- an ambiguous-but-successful result
-    // is recorded as-is and the planner moves on, rather than gambling
-    // on a second attempt of something that may have already worked.
     if (!result.success) {
-      await new Promise(r => setTimeout(r, 1500));
-      result = await callNexusWithTimeout(next.action, next.payload);
+      recoveryAttempted = true;
+      if (SAFE_TO_REPEAT_ACTIONS.includes(next.action)) {
+        // Idempotent/read-only action (open_app, navigate, inspect_page,
+        // etc.) -- safe to just try again as-is, same as before this
+        // pass. A transient failure (app briefly busy, page still
+        // loading) is the common case here and a plain retry resolves
+        // it without needing any diagnosis.
+        await new Promise(r => setTimeout(r, 1500));
+        result = await callNexusWithTimeout(next.action, next.payload);
+      } else {
+        // Non-idempotent action failed (typing, clicking, submitting,
+        // deleting, downloading, ...). Blindly resending the exact same
+        // action/payload risks double-executing something that may have
+        // partially gone through. Instead: one bounded, generic state
+        // inspection (see diagnoseFailure) to understand what actually
+        // happened, then let the NEXT planning iteration (below) decide
+        // how to adapt -- a different selector, a different approach,
+        // or asking the user -- using that state as context, instead of
+        // this function guessing a fixed recovery recipe itself.
+        diagnosis = await diagnoseFailure(next);
+      }
     }
+
+    const riskTier = classifyRisk(next.action, next.payload); // 'green' | 'yellow' | 'red' (red already handled above via isSensitiveStep)
+
+    // Minimal structured observability -- cheap (one synchronous stdout
+    // write, no network/DB call, so this never touches the hot path's
+    // latency budget). Deliberately a single flat line so it's greppable
+    // in logs without a log-aggregation setup: planId, step index,
+    // action, riskTier, success, verified, whether recovery was
+    // attempted, and step duration.
+    console.log(JSON.stringify({
+      planId: plan.planId,
+      step: plan.history.length + 1,
+      action: next.action,
+      riskTier,
+      success: result.success,
+      verified: result.evidence?.verified ?? null,
+      recoveryAttempted,
+      durationMs: Date.now() - __stepStart,
+    }));
 
     plan.history.push({
       action: next.action,
@@ -258,6 +359,16 @@ async function runLoop(plan) {
       error: result.error,
       evidence: result.evidence ? { verified: result.evidence.verified } : null,
       data: result.data || null,
+      diagnosis,
+      riskTier,
+      // YELLOW: "stronger verification, don't silently guess" -- this
+      // costs nothing extra (result.evidence is already returned by
+      // callNexusWithTimeout), it just means a YELLOW step whose own
+      // verification came back ambiguous is recorded honestly rather
+      // than reported the same as a cleanly-verified GREEN step.
+      verificationNote: (riskTier === 'yellow' && result.success && result.evidence?.verified === false)
+        ? 'Action reported success but could not be independently verified.'
+        : null,
     });
 
     // If this step's success returned structured, comparable results
@@ -272,10 +383,32 @@ async function runLoop(plan) {
     taskContext.recordAction(plan.userId, next.action, next.payload);
 
     if (!result.success) {
-      plan.status = 'error';
-      plan.result = { type: 'plan_error', message: `Step "${next.action}" failed even after retry: ${result.error}`, steps: plan.history };
-      scheduleCleanup(plan.planId);
-      return plan.result;
+      // PASS 3: was an immediate hard-abort of the entire goal on any
+      // step that failed twice (the identical action, blindly retried
+      // once). Now: only abort after MAX_CONSECUTIVE_FAILURES steps in a
+      // row have failed -- this is the "bounded recovery attempts"
+      // requirement. Under that bound, the loop continues instead of
+      // returning here, so the NEXT decideNextStep call sees this
+      // failure (plus the diagnosis captured above) in history and can
+      // propose an ADAPTED next action -- a different selector, a
+      // different capability, or a clarifying question -- rather than
+      // the goal dying on the first non-idempotent hiccup.
+      plan.consecutiveFailures = (plan.consecutiveFailures || 0) + 1;
+      if (plan.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        plan.status = 'error';
+        plan.result = {
+          type: 'plan_error',
+          message: `${MAX_CONSECUTIVE_FAILURES} attempts in a row failed on "${next.action}": ${result.error}`,
+          steps: plan.history,
+        };
+        scheduleCleanup(plan.planId);
+        return plan.result;
+      }
+      // Under the bound -- fall through to the top of the while loop,
+      // which calls decideNextStep again with this failure now part of
+      // plan.history.
+    } else {
+      plan.consecutiveFailures = 0;
     }
   }
 
@@ -287,7 +420,7 @@ async function runLoop(plan) {
 
 function newPlan(userId, goal) {
   const planId = makePlanId();
-  const plan = { planId, userId, goal, history: [], clarifications: [], status: 'running', pendingStep: null, pendingQuestion: null, result: null };
+  const plan = { planId, userId, goal, history: [], clarifications: [], status: 'running', pendingStep: null, pendingQuestion: null, result: null, consecutiveFailures: 0 };
   plans.set(planId, plan);
   return plan;
 }

@@ -35,9 +35,30 @@ const MCIS_NATIVE_ACTIONS = [
 ];
 
 const KNOWN_ACTIONS = [...NEXUS_ACTIONS, ...MCIS_NATIVE_ACTIONS, ...GOAL_ACTIONS];
+
+// Internal safety constraint (not user-facing, not a phrase dictionary):
+// which actions are safe to silently repeat when the user says "do that
+// again"/"same thing" and lastAction refers to one of these. Read-only /
+// navigation / view-state actions are safe -- repeating them changes
+// nothing new. Anything that writes, submits, sends, deletes, or pays is
+// deliberately excluded; for those, the classifier asks for confirmation
+// instead of guessing that a blind repeat is safe (see SYSTEM_PROMPT).
+const SAFE_TO_REPEAT_ACTIONS = [
+  'open_app', 'focus_app', 'switch_to_app', 'minimize_app', 'maximize_app', 'get_running_apps',
+  'read_file', 'search_file', 'verify_path', 'list_folder', 'search_folder',
+  'open_path', 'reveal_file', 'open_file', 'list_items', 'search_items',
+  'focus_window', 'minimize_window', 'maximize_window', 'window_exists', 'active_window', 'list_processes',
+  'inspect_window', 'read_target', 'target_exists', 'inspect_screen_state', 'capture_screen', 'capture_active_window',
+  'read_notifications', 'navigate', 'back', 'forward', 'refresh', 'new_tab', 'switch_tab',
+  'inspect_page', 'inspect_page_state', 'read_text', 'read_tables', 'hover',
+  'next_page', 'previous_page', 'read_word_document', 'read_excel_rows', 'inspect_powerpoint_presentation',
+];
+
 const SYSTEM_PROMPT = `You are MCIS's intent classifier. Given a user message, decide if it is:
 - "chat": a question or conversation, no laptop action needed
 - "action": user wants something done on their laptop, in a browser, or via MCIS automation
+- "clarify": the request is clearly actionable, but WHO/WHAT it targets cannot be reliably
+  determined from the message plus the given context -- see AMBIGUITY below
 
 SEMANTIC MATCHING — READ THIS FIRST: users never learn or memorize exact
 Nexus phrasing. They speak naturally — one word, a full sentence, an
@@ -145,8 +166,41 @@ If "action", classify further into one of two shapes:
    Payload shape for these matches their existing specific fields (to, purpose, tone, context for
    draftEmail; text, dueAt for addReminder; etc. — use your best judgment based on the action name).
 
+AMBIGUITY — when to use "clarify" instead of guessing:
+Never invent a target/app/entity that isn't actually determinable. A request is genuinely
+actionable but ambiguous when it uses a reference ("that", "it", "this", "another", "the same
+one", "close it") and:
+  (a) there is NO context to resolve it (no activeGoal, no results, no lastAction given), OR
+  (b) the context gives MULTIPLE equally plausible candidates with nothing to disambiguate them
+      (e.g. two different apps were both recently relevant and the message doesn't distinguish
+      which one), OR
+  (c) the reference is to a numbered/ordered result ("the first one", "the second one", "the
+      cheapest") but CURRENT TASK CONTEXT's "results" list is empty or doesn't have that many
+      entries.
+In any of these cases, respond with "clarify" and a short, specific question -- e.g. "Which one
+do you mean — Chrome or VS Code?" not a generic "Can you clarify?". Do NOT default to "chat" for
+these (the request IS actionable, just underspecified) and do NOT guess an action/target you
+aren't reasonably confident about.
+When context DOES reliably resolve the reference (only one plausible candidate, or a results list
+with enough entries for "the first one"/"the second one"), resolve it and classify as "action"
+normally -- do not ask needlessly for something context already answers.
+
+REPEATING THE LAST ACTION ("do that again", "do the same thing", "same as before"): only classify
+this as a direct repeat of CURRENT TASK CONTEXT's lastAction if that action is one of:
+${SAFE_TO_REPEAT_ACTIONS.join(', ')}
+These are read-only/navigation actions where repeating changes nothing new, so it's safe to just
+do it again. For any OTHER lastAction (typing, clicking a button, submitting a form, sending,
+deleting, downloading, saving, paying, etc.) — these can have a real effect each time they run, so
+do NOT silently repeat them. Instead respond with "clarify", asking the user to confirm they
+really want to do that specific action again.
+
+ANSWERING A PENDING CLARIFICATION: if CURRENT TASK CONTEXT includes a "pendingClarification"
+(Nexus just asked a question), treat the user's message as very likely the answer to THAT
+question, not a brand-new unrelated request — resolve it against pendingClarification.question
+and pendingClarification.originalMessage together to determine the actual action.
+
 Respond ONLY with JSON, no markdown, no explanation:
-{ "type": "chat" | "action", "action": "<actionType or null>", "payload": {} }`;
+{ "type": "chat" | "action" | "clarify", "action": "<actionType or null>", "payload": {}, "question": "<only when type is clarify>" }`;
 
 async function classifyIntent(userMessage, context = null) {
   let result;
@@ -196,7 +250,14 @@ ${JSON.stringify(context)}`
     return { type: 'chat', action: null, payload: {} };
   }
 
+  if (parsed.type === 'clarify' && !parsed.question) {
+    // Defensive fallback -- the model said it needs to ask something but
+    // didn't actually give a question. Don't silently guess an action;
+    // ask a safe generic clarifying question instead of proceeding blind.
+    parsed.question = 'Could you clarify what you mean?';
+  }
+
   return parsed;
 }
 
-module.exports = { classifyIntent, NEXUS_ACTIONS, MCIS_NATIVE_ACTIONS };
+module.exports = { classifyIntent, NEXUS_ACTIONS, MCIS_NATIVE_ACTIONS, SAFE_TO_REPEAT_ACTIONS };

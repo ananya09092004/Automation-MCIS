@@ -4,6 +4,18 @@ import shutil
 
 class FileManager:
 
+    def file_has_content(self, path: str) -> bool:
+        """Pure query, no side effects: True if `path` already exists AND
+        has non-empty content. Used by the write_file dispatch (see
+        desktop/executor/router.py) to report when a write is about to
+        clobber existing content, instead of silently overwriting it
+        with no signal anywhere that anything was lost."""
+        try:
+            file = Path(path)
+            return file.is_file() and file.stat().st_size > 0
+        except Exception:
+            return False
+
     def create_file(self, path: str) -> bool:
 
         try:

@@ -230,7 +230,7 @@ class VoiceController:
     def _speak_response(self, data: dict, lang: str = "hi") -> str:
         response_type = data.get("type")
 
-        if response_type in ("permission_required", "plan_paused"):
+        if response_type in ("permission_required", "plan_paused", "clarification_needed"):
             return data.get("message") or get_phrase("approval_needed", lang)
 
         if response_type == "plan_complete":

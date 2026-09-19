@@ -38,6 +38,7 @@ function _fresh() {
     activeGoal: null, // { goal: string, planId: string|null, constraints: object, at: number }
     lastResults: [],  // [{ index: number, data: any }]
     lastAction: null, // { action: string, at: number }
+    pendingClarification: null, // { question: string, originalMessage: string, at: number }
     updatedAt: _now(),
   };
 }
@@ -97,7 +98,9 @@ function recordAction(userId, action, payload) {
 function toPromptContext(userId) {
   if (!userId) return null;
   const ctx = getContext(userId);
-  if (!ctx.activeGoal && ctx.lastResults.length === 0 && !ctx.lastAction) return null;
+  if (!ctx.activeGoal && ctx.lastResults.length === 0 && !ctx.lastAction && !ctx.pendingClarification) {
+    return null;
+  }
   return {
     activeGoal: ctx.activeGoal
       ? { goal: ctx.activeGoal.goal, constraints: ctx.activeGoal.constraints }
@@ -105,7 +108,38 @@ function toPromptContext(userId) {
     resultCount: ctx.lastResults.length,
     results: ctx.lastResults.slice(0, 10),
     lastAction: ctx.lastAction ? { action: ctx.lastAction.action } : null,
+    pendingClarification: ctx.pendingClarification
+      ? { question: ctx.pendingClarification.question, originalMessage: ctx.pendingClarification.originalMessage }
+      : null,
   };
+}
+
+/**
+ * Record that Nexus just asked the user a clarifying question (e.g.
+ * "Which one do you mean?") -- the NEXT message from this user is very
+ * likely the answer to it, not a fresh unrelated request, so callers
+ * should surface this to the classifier before the next classifyIntent
+ * call. Cleared automatically the next time classification runs
+ * (regardless of whether it was actually used) so a stale question
+ * never lingers and gets attached to an unrelated later message.
+ */
+function setPendingClarification(userId, question, originalMessage) {
+  if (!userId) return;
+  const ctx = getContext(userId);
+  ctx.pendingClarification = { question, originalMessage, at: _now() };
+  ctx.updatedAt = _now();
+}
+
+function getPendingClarification(userId) {
+  if (!userId) return null;
+  const ctx = getContext(userId);
+  return ctx.pendingClarification;
+}
+
+function clearPendingClarification(userId) {
+  if (!userId) return;
+  const ctx = getContext(userId);
+  ctx.pendingClarification = null;
 }
 
 /** Explicitly end the current task context (e.g. user says "start fresh" / "never mind"). */
@@ -122,5 +156,8 @@ module.exports = {
   recordAction,
   toPromptContext,
   clearContext,
+  setPendingClarification,
+  getPendingClarification,
+  clearPendingClarification,
   CONTEXT_TTL_MS,
 };

@@ -14,13 +14,15 @@ const productivity = require('../productivity/productivity');
 const calendar = require('../productivity/calendar');
 const { tryFastPath } = require('../backend-routing/fastPath');
 const taskContext = require('../backend-routing/taskContext');
+const { classifyRisk } = require('../backend-routing/riskModel');
 const { askAI } = require('../services/ai');
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-const HIGH_RISK_ACTIONS = [
-  'delete_file', 'delete_folder', 'move_file', 'move_folder', 'rename_file', 'rename_folder',
-  'write_file', 'run_terminal', 'kill_process', 'close_app', 'close_window', 'login',
-];
+// PASS 2: the old flat HIGH_RISK_ACTIONS list (and needsConfirmation
+// checks below) is superseded by riskModel.js's 3-tier GREEN/YELLOW/RED
+// classification -- see that file for the actual action/keyword sets.
+// Kept as a rename-in-place at each call site rather than removed
+// outright, so the diff here is minimal and behavior stays traceable.
 
 const DICTATION_CONTINUITY_MS = 5 * 60 * 1000;
 const lastDictation = new Map();
@@ -179,11 +181,28 @@ router.post('/', async (req, res) => {
         // Give the classifier the user's current task context (if any) so
         // a follow-up like "make it under 7000" or "only ones near the
         // beach" gets folded into a complete, standalone goal instead of
-        // being classified blind -- see taskContext.js.
+        // being classified blind -- see taskContext.js. This also carries
+        // any pendingClarification (Nexus just asked something last turn)
+        // so THIS message can be resolved as the answer to that question.
         const r = await classifyIntent(message, taskContext.toPromptContext(userId));
         console.log('[TIMING] classifyIntent:', Date.now() - t0, 'ms');
+        // Whether or not it was actually used, a pending clarification is
+        // now stale after this classification -- clear it so a LATER,
+        // unrelated message never gets mistakenly treated as an answer to
+        // an old question.
+        taskContext.clearPendingClarification(userId);
         return r;
       })();
+
+  if (intent.type === 'clarify') {
+    // The request was actionable but underspecified (ambiguous reference,
+    // no/insufficient context, or an unsafe "do that again" repeat) --
+    // ask instead of guessing wrong. Remember the question so the user's
+    // next message can be resolved as its answer.
+    taskContext.setPendingClarification(userId, intent.question, message);
+    return res.json({ type: 'clarification_needed', message: intent.question });
+  }
+
   if (intent.type === 'chat') {
     return res.json({
       type: 'chat',
@@ -226,7 +245,8 @@ router.post('/', async (req, res) => {
   }
 
   if (NEXUS_ACTIONS.includes(intent.action)) {
-    const needsConfirmation = HIGH_RISK_ACTIONS.includes(intent.action);
+    const riskTier = classifyRisk(intent.action, intent.payload);
+    const needsConfirmation = riskTier === 'red';
     const targetResource =
       intent.payload.parameters?.path ||
       intent.payload.parameters?.url ||
@@ -269,12 +289,22 @@ router.post('/', async (req, res) => {
       });
       console.log('[TIMING] sendCommandToNexus:', Date.now() - __t0, 'ms');
 
+      // YELLOW tier: "stronger verification, don't silently guess" --
+      // this costs nothing extra (result.evidence is already returned by
+      // sendCommandToNexus, no additional call), it just means a YELLOW
+      // action whose own verification came back ambiguous is reported
+      // honestly instead of a flat "Done" the same way a GREEN action
+      // would be. GREEN/RED responses are completely unchanged.
+      if (riskTier === 'yellow' && result?.success && result?.evidence?.verified === false) {
+        result.verificationNote = 'Action reported success but could not be independently verified.';
+      }
+
       if (intent.action === 'type_text' && result.success) {
         recordDictation(userId, intent.payload);
       }
       logAction(userId, intent.action, intent.payload, result).catch(() => {});
       appendAuditLog(userId, intent.action, intent.payload, result).catch(() => {});
-      return res.json({ type: 'nexus_action', action: intent.action, result });
+      return res.json({ type: 'nexus_action', action: intent.action, result, riskTier });
     } catch (err) {
       appendAuditLog(userId, intent.action, intent.payload, err).catch(() => {});
       return res.status(500).json({ type: 'nexus_action', action: intent.action, error: err.message });
@@ -288,7 +318,7 @@ router.post('/', async (req, res) => {
   const targetResource = intent.payload.appName || intent.payload.filePath ||
     intent.payload.folderPath || intent.payload.packageName || intent.payload.command;
 
-  const needsConfirmation = HIGH_RISK_ACTIONS.includes(intent.action);
+  const needsConfirmation = classifyRisk(intent.action, intent.payload) === 'red';
   const permitted = await isPermitted(userId, targetResource);
 
   if (needsConfirmation || !permitted) {
