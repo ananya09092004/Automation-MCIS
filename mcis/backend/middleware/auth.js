@@ -3,6 +3,7 @@ const logger = require('../services/logger');
 
 const publicApiPaths = [
   { method: 'GET', path: '/github/callback' },
+  { method: 'GET', path: '/oauth/google_drive/callback' }, // Layer 9: forwards code/state to the app in the URL fragment only
   { method: 'GET', path: '/data-controls/privacy/summary' },
   { method: 'POST', path: '/command' },
   { method: 'POST', path: '/device/pair/start' },
@@ -61,7 +62,8 @@ function getUserIdsFromApiPath(method, path) {
     { pattern: /^\/memory\/nl-delete\/([^/]+)/ },
     { pattern: /^\/memory\/([^/]+)$/, methods: ['GET'] },
     { pattern: /^\/multifile\/([^/]+)/ },
-    { pattern: /^\/notifications\/([^/]+)/ },
+    // Layer 9: only GET /notifications/:userId carries a user id; PATCH /:id/read and DELETE /:id carry a notification id (owner-checked in the route).
+    { pattern: /^\/notifications\/([^/]+)$/, methods: ['GET'] },
     { pattern: /^\/profile\/([^/]+)/ },
     { pattern: /^\/sandbox\/([^/]+)/ },
     { pattern: /^\/timeline\/([^/]+)/ },
@@ -75,12 +77,22 @@ function getUserIdsFromApiPath(method, path) {
     .filter((id) => id.length <= 200);
 }
 
+let warnedBypassInProduction = false;
+
 async function authenticateFirebaseUser(req, res, next) {
   if (isPublicApiRequest(req)) return next();
 
   if (process.env.ALLOW_UNAUTHENTICATED_API === 'true') {
-    logger.warn('ALLOW_UNAUTHENTICATED_API=true is enabled. Do not use this in production.');
-    return next();
+    // Layer 9: the development bypass is refused in production (fail closed).
+    if (process.env.NODE_ENV === 'production') {
+      if (!warnedBypassInProduction) {
+        warnedBypassInProduction = true;
+        logger.error('ALLOW_UNAUTHENTICATED_API=true is IGNORED because NODE_ENV=production. Authentication stays on.');
+      }
+    } else {
+      logger.warn('ALLOW_UNAUTHENTICATED_API=true is enabled. Do not use this in production.');
+      return next();
+    }
   }
 
   const authHeader = req.headers.authorization || '';

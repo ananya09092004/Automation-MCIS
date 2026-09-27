@@ -1,79 +1,67 @@
 // backend/services/githubService.js
+//
+// Layer 6: legacy per-user GitHub OAuth, now backed by the encrypted Layer 5
+// integration store (services/security/githubOAuth.js). What changed:
+//   - state: was base64(userId) (guessable, replayable); now 32 random bytes,
+//     hashed server-side, bound to user + personal workspace + provider,
+//     10-minute expiry, single use (services/security/oauthStateService.js)
+//   - token storage: was plaintext user_integrations.github_token; now
+//     AES-256-GCM in integration_credentials. The legacy column is never read
+//     or written here (a DB trigger rejects new plaintext writes; existing rows
+//     are moved by scripts/migrate-legacy-github-tokens.js)
+//   - tokens never appear in logs, responses or errors
+//   - repo/file names are validated and path segments encoded, so a file path
+//     like "../../user/keys" can no longer reach other GitHub API endpoints
+// The public API (getOAuthURL / exchangeCodeForToken / getUserToken /
+// createRepoAndPush / isConnected) keeps its shape for existing callers.
 
-const { createClient } = require('@supabase/supabase-js');
+const { getDefaultGithubAccountService } = require('./security/githubOAuth');
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
-);
+const REPO_NAME_RE = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
 
-const GITHUB_CLIENT_ID     = process.env.GITHUB_CLIENT_ID;
-const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET;
-const REDIRECT_URI         = process.env.GITHUB_REDIRECT_URI; // e.g. https://your-backend.onrender.com/api/github/callback
+function accounts() {
+  return getDefaultGithubAccountService();
+}
+
+function encodeRepoPath(filePath) {
+  const parts = String(filePath || '').replace(/\\/g, '/').split('/').filter((p) => p !== '');
+  if (!parts.length || parts.length > 50 || parts.some((p) => p === '.' || p === '..' || p.length > 255)) {
+    throw new Error(`Invalid file path in project: ${String(filePath).slice(0, 100)}`);
+  }
+  return parts.map(encodeURIComponent).join('/');
+}
 
 class GitHubService {
-
   // ─── 1. Get OAuth URL (send to frontend) ─────────────────────────────────
-  getOAuthURL(userId) {
-    const state  = Buffer.from(userId).toString('base64'); // encode userId in state
-    const scopes = 'repo,read:user';
-    return `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=${scopes}&state=${state}`;
+  async getOAuthURL(userId) {
+    return accounts().startUserConnect(userId);
   }
 
   // ─── 2. Exchange code for token (OAuth callback) ─────────────────────────
   async exchangeCodeForToken(code, state) {
-    const userId = Buffer.from(state, 'base64').toString('utf8');
-
-    const response = await fetch('https://github.com/login/oauth/access_token', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Accept':       'application/json',
-      },
-      body: JSON.stringify({
-        client_id:     GITHUB_CLIENT_ID,
-        client_secret: GITHUB_CLIENT_SECRET,
-        code,
-        redirect_uri:  REDIRECT_URI,
-      }),
-    });
-
-    const data = await response.json();
-    if (data.error) throw new Error(data.error_description);
-
-    // Get GitHub username
-    const userRes = await fetch('https://api.github.com/user', {
-      headers: { Authorization: `Bearer ${data.access_token}` },
-    });
-    const githubUser = await userRes.json();
-
-    // Save to Supabase
-    await supabase
-      .from('user_integrations')
-      .upsert([{
-        user_id:         userId,
-        github_token:    data.access_token,
-        github_username: githubUser.login,
-        updated_at:      new Date().toISOString(),
-      }], { onConflict: 'user_id' });
-
-    return { username: githubUser.login, userId };
+    return accounts().completeUserConnect({ code, state });
   }
 
-  // ─── 3. Get stored token for a user ──────────────────────────────────────
+  // ─── 3. Stored connection for a user (server-side use only) ──────────────
+  // Returns { github_token, github_username } for existing internal callers.
   async getUserToken(userId) {
-    const { data, error } = await supabase
-      .from('user_integrations')
-      .select('github_token, github_username')
-      .eq('user_id', userId)
-      .single();
+    const t = await accounts().getUserToken(userId);
+    return t ? { github_token: t.token, github_username: t.username } : null;
+  }
 
-    if (error || !data?.github_token) return null;
-    return data;
+  async getStatus(userId) {
+    return accounts().status(userId);
+  }
+
+  async disconnect(userId) {
+    return accounts().disconnectUser(userId);
   }
 
   // ─── 4. Create repo + push code ──────────────────────────────────────────
   async createRepoAndPush(userId, { repoName, description, files }) {
+    if (typeof repoName !== 'string' || !REPO_NAME_RE.test(repoName)) throw new Error('Invalid repository name.');
+    if (!Array.isArray(files) || !files.length || files.length > 500) throw new Error('files must be a non-empty array (max 500).');
+    const paths = files.map((f) => encodeRepoPath(f && f.path)); // validate ALL before any write
     const integration = await this.getUserToken(userId);
     if (!integration) throw new Error('GitHub not connected. Please connect GitHub first.');
 
@@ -81,62 +69,60 @@ class GitHubService {
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      Accept:         'application/vnd.github+json',
+      Accept: 'application/vnd.github+json',
     };
+    const repoPath = `${encodeURIComponent(username)}/${encodeURIComponent(repoName)}`;
 
     // Check if repo exists
-    const checkRes = await fetch(`https://api.github.com/repos/${username}/${repoName}`, { headers });
+    const checkRes = await fetch(`https://api.github.com/repos/${repoPath}`, { headers });
 
     let repoUrl;
 
     if (checkRes.status === 404) {
-      // Create new repo
       const createRes = await fetch('https://api.github.com/user/repos', {
-        method:  'POST',
+        method: 'POST',
         headers,
         body: JSON.stringify({
-          name:        repoName,
-          description,
-          private:     false,
-          auto_init:   true,
+          name: repoName,
+          description: typeof description === 'string' ? description.slice(0, 350) : undefined,
+          private: false,
+          auto_init: true,
         }),
       });
+      if (!createRes.ok) throw new Error(`GitHub refused to create the repository (HTTP ${createRes.status}).`);
       const repo = await createRes.json();
-      repoUrl    = repo.html_url;
+      repoUrl = repo.html_url;
 
       // Wait for repo to initialize
-      await new Promise(r => setTimeout(r, 2000));
-    } else {
+      await new Promise((r) => setTimeout(r, 2000));
+    } else if (checkRes.ok) {
       const repo = await checkRes.json();
-      repoUrl    = repo.html_url;
+      repoUrl = repo.html_url;
+    } else {
+      throw new Error(`Could not access the repository (HTTP ${checkRes.status}).`);
     }
 
-    // Push each file
-    for (const file of files) {
-      await this.pushFile(username, repoName, file.path, file.content, token);
+    for (let i = 0; i < files.length; i++) {
+      await this.pushFile(repoPath, paths[i], files[i].path, files[i].content, token);
     }
 
     return {
       repoUrl,
-      cloneUrl:   `https://github.com/${username}/${repoName}.git`,
-      vsCodeUrl:  `vscode://vscode.git/clone?url=https://github.com/${username}/${repoName}.git`,
+      cloneUrl: `https://github.com/${username}/${repoName}.git`,
+      vsCodeUrl: `vscode://vscode.git/clone?url=https://github.com/${username}/${repoName}.git`,
       codespacesUrl: `https://github.com/codespaces/new?repo=${username}/${repoName}`,
     };
   }
 
   // ─── 5. Push a single file to repo ───────────────────────────────────────
-  async pushFile(username, repo, filePath, content, token) {
+  async pushFile(repoPath, encodedPath, displayPath, content, token) {
     const headers = {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
-      Accept:         'application/vnd.github+json',
+      Accept: 'application/vnd.github+json',
     };
-
-    // Check if file exists (to get SHA for update)
-    const checkRes = await fetch(
-      `https://api.github.com/repos/${username}/${repo}/contents/${filePath}`,
-      { headers }
-    );
+    const url = `https://api.github.com/repos/${repoPath}/contents/${encodedPath}`;
+    const checkRes = await fetch(url, { headers });
 
     let sha;
     if (checkRes.ok) {
@@ -144,24 +130,25 @@ class GitHubService {
       sha = existing.sha;
     }
 
-    const encoded = Buffer.from(content).toString('base64');
+    const encoded = Buffer.from(String(content ?? '')).toString('base64');
 
-    await fetch(`https://api.github.com/repos/${username}/${repo}/contents/${filePath}`, {
-      method:  'PUT',
+    const put = await fetch(url, {
+      method: 'PUT',
       headers,
       body: JSON.stringify({
-        message: `MCIS: Add ${filePath}`,
+        message: `MCIS: Add ${String(displayPath).slice(0, 200)}`,
         content: encoded,
         ...(sha ? { sha } : {}),
       }),
     });
+    if (!put.ok) throw new Error(`GitHub rejected ${String(displayPath).slice(0, 200)} (HTTP ${put.status}).`);
   }
 
   // ─── 6. Check if user has GitHub connected ───────────────────────────────
   async isConnected(userId) {
-    const integration = await this.getUserToken(userId);
-    return !!integration;
+    return (await accounts().status(userId)).connected;
   }
 }
 
 module.exports = new GitHubService();
+module.exports.encodeRepoPath = encodeRepoPath;

@@ -3,6 +3,8 @@ const { sendCommandToNexus } = require('./nexusBridge');
 const { NEXUS_ACTIONS, SAFE_TO_REPEAT_ACTIONS } = require('./intentRouter');
 const taskContext = require('./taskContext');
 const { classifyRisk } = require('./riskModel');
+const crypto = require('crypto');
+const { isSamePrincipal } = require('../security-engine/callerIdentity');
 
 const MAX_STEPS = 15;
 const STEP_TIMEOUT_MS = 30000;
@@ -50,8 +52,22 @@ let emergencyStopActive = false;
 // getPlanStatus() before being garbage-collected from memory.
 const FINISHED_PLAN_TTL_MS = 15 * 60 * 1000;
 
+// 128-bit CSPRNG id. The old Math.random() id (~41 bits, predictable
+// PRNG) was the only thing standing between a caller and someone
+// else's plan on the status/answer/resume routes.
 function makePlanId() {
-  return 'plan_' + Math.random().toString(36).slice(2, 10);
+  return 'plan_' + crypto.randomBytes(16).toString('hex');
+}
+
+// Ownership guard for every externally reachable plan operation.
+// Unknown plan and someone else's plan are indistinguishable to the
+// caller (same message), so plan ids cannot be probed.
+const PLAN_NOT_FOUND = Object.freeze({ type: 'plan_error', code: 'PLAN_NOT_FOUND', message: 'Plan nahi mila ya expire ho gaya.' });
+
+function getOwnedPlan(planId, callerId) {
+  const plan = plans.get(planId);
+  if (!plan || !isSamePrincipal(plan.userId, callerId)) return null;
+  return plan;
 }
 
 function scheduleCleanup(planId) {
@@ -94,14 +110,24 @@ function clearEmergencyStop() {
   emergencyStopActive = false;
 }
 
-async function callNexusWithTimeout(action, payload) {
+// Read-only view of the emergency-stop flag for other executors
+// (Layer 3 agent executions honour the same kill switch).
+function isEmergencyStopActive() {
+  return emergencyStopActive;
+}
+
+// approvalToken is optional and defaults to null, so every existing
+// caller (run_goal / voice plans, hybridOrchestrator) behaves exactly as
+// before. Layer 3 agent executions pass a per-approval token for steps a
+// human explicitly approved.
+async function callNexusWithTimeout(action, payload, approvalToken = null) {
   const call = sendCommandToNexus({
     platform: payload.platform || 'desktop',
     action,
     parameters: payload.parameters || {},
     target: payload.target || {},
     value: payload.value || null,
-    approval_token: null,
+    approval_token: approvalToken || null,
   });
   const timeout = new Promise(resolve =>
     setTimeout(() => resolve({ success: false, error: `Timed out after ${STEP_TIMEOUT_MS / 1000}s` }), STEP_TIMEOUT_MS)
@@ -244,14 +270,14 @@ Respond ONLY with JSON, no markdown:
     result = await generateContent(prompt);
   } catch (err) {
     console.error('decideNextStep Gemini error (all models failed):', err.message);
-    return { done: true, action: null, reason: 'AI system abhi busy hai, thodi der baad try karo.' };
+    return { done: true, action: null, reason: 'AI system abhi busy hai, thodi der baad try karo.', plannerError: true };
   }
 
   const text = result.response.text().trim().replace(/```json|```/g, '');
   try {
     return JSON.parse(text);
   } catch {
-    return { done: true, action: null, reason: 'planner_parse_error' };
+    return { done: true, action: null, reason: 'planner_parse_error', plannerError: true };
   }
 }
 
@@ -464,13 +490,20 @@ function startPlanAsync(userId, goal) {
   return { type: 'plan_started', planId: plan.planId, status: 'running' };
 }
 
-function resumePlanAsync(planId) {
+// Resume a plan that is PAUSED waiting for approval of a sensitive step.
+// callerId is required: only the plan's owner may approve, and only a
+// paused plan may be resumed (resuming a running plan used to start a
+// second concurrent runLoop on the same plan).
+function resumePlanAsync(planId, callerId) {
   if (emergencyStopActive) {
-    return { type: 'plan_error', message: 'Emergency stop activate hai.' };
+    return { type: 'plan_error', code: 'EMERGENCY_STOP', message: 'Emergency stop activate hai.' };
   }
-  const plan = plans.get(planId);
+  const plan = getOwnedPlan(planId, callerId);
   if (!plan) {
-    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+    return { ...PLAN_NOT_FOUND };
+  }
+  if (plan.status !== 'paused') {
+    return { type: 'plan_error', code: 'PLAN_NOT_PAUSED', message: 'Ye plan approval ka wait nahi kar raha.' };
   }
   plan.status = 'running';
   plan.pendingStep = null;
@@ -483,13 +516,13 @@ function resumePlanAsync(planId) {
 }
 
 // Answer a mid-goal clarifying question and resume execution in the background.
-function submitClarification(planId, answer) {
-  const plan = plans.get(planId);
+function submitClarification(planId, answer, callerId) {
+  const plan = getOwnedPlan(planId, callerId);
   if (!plan) {
-    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+    return { ...PLAN_NOT_FOUND };
   }
   if (plan.status !== 'awaiting_clarification') {
-    return { type: 'plan_error', message: 'Ye plan clarification ka wait nahi kar raha.' };
+    return { type: 'plan_error', code: 'PLAN_NOT_AWAITING_CLARIFICATION', message: 'Ye plan clarification ka wait nahi kar raha.' };
   }
   plan.clarifications.push({ question: plan.pendingQuestion, answer });
   plan.pendingQuestion = null;
@@ -502,10 +535,10 @@ function submitClarification(planId, answer) {
   return { type: 'plan_started', planId: plan.planId, status: 'running' };
 }
 
-function getPlanStatus(planId) {
-  const plan = plans.get(planId);
+function getPlanStatus(planId, callerId) {
+  const plan = getOwnedPlan(planId, callerId);
   if (!plan) {
-    return { type: 'plan_error', message: 'Plan nahi mila ya expire ho gaya.' };
+    return { ...PLAN_NOT_FOUND };
   }
   return snapshot(plan);
 }
@@ -525,4 +558,6 @@ module.exports = {
   decideNextStep,
   isSensitiveStep,
   callNexusWithTimeout,
+  diagnoseFailure,
+  isEmergencyStopActive,
 };

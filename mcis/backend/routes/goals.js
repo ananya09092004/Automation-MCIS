@@ -12,6 +12,28 @@ const { getUserDeepProfile } = require('../services/userDeepProfileService');
 const { predictUserBehavior } = require('../services/behaviorAnalyzerService');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+// Layer 2: goals / smart goals (goal_breakdowns) are workspace-scoped and
+// owner-only inside a scoped request (see services/workspaceScope.js).
+// Previously PATCH/DELETE /:goalId and the review/adapt routes accepted
+// any goal id.
+const { currentScope, applyScope, scopeFields } = require('../services/workspaceScope');
+const GOAL_NOT_FOUND = { success: false, error: 'Goal not found' };
+
+function ownedGoalQuery(query) {
+  const scope = currentScope();
+  return scope ? applyScope(query.eq('user_id', scope.userId), scope) : query;
+}
+
+// Resolves a smart goal (goal_breakdowns) the caller may access, or null.
+async function findOwnedBreakdownGoal(userId, goalId) {
+  const { data } = await applyScope(supabase
+    .from('goal_breakdowns')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('id', goalId));
+  return (data && data[0]) || null;
+}
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // ===== EXISTING ENDPOINTS =====
@@ -19,10 +41,10 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 // Sab goals load karo
 router.get('/:userId', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await applyScope(supabase
       .from('goals')
       .select('*')
-      .eq('user_id', req.params.userId)
+      .eq('user_id', req.params.userId))
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -46,7 +68,8 @@ router.post('/', async (req, res) => {
         category: category || 'general',
         target_date: targetDate || null,
         progress: 0,
-        status: 'active'
+        status: 'active',
+        ...scopeFields()
       }])
       .select()
       .single();
@@ -65,18 +88,19 @@ router.patch('/:goalId/progress', async (req, res) => {
     const { goalId } = req.params;
 
     // Goal update karo
-    const { data, error } = await supabase
+    const { data: updatedRows, error } = await ownedGoalQuery(supabase
       .from('goals')
       .update({
         progress: Math.min(100, Math.max(0, progress)),
         status: progress >= 100 ? 'completed' : 'active',
         updated_at: new Date().toISOString()
       })
-      .eq('id', goalId)
-      .select()
-      .single();
+      .eq('id', goalId))
+      .select();
 
     if (error) throw error;
+    const data = updatedRows && updatedRows[0];
+    if (!data) return res.status(404).json(GOAL_NOT_FOUND);
 
     // Update history save karo
     await supabase.from('goal_updates').insert([{
@@ -105,7 +129,10 @@ router.patch('/:goalId/progress', async (req, res) => {
 // Goal delete karo
 router.delete('/:goalId', async (req, res) => {
   try {
-    await supabase.from('goals').delete().eq('id', req.params.goalId);
+    const { data: deletedRows, error } = await ownedGoalQuery(supabase
+      .from('goals').delete().eq('id', req.params.goalId)).select('id, workspace_id');
+    if (error) throw error;
+    if (currentScope() && !(deletedRows && deletedRows.length)) return res.status(404).json(GOAL_NOT_FOUND);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -115,11 +142,11 @@ router.delete('/:goalId', async (req, res) => {
 // AI weekly report
 router.get('/:userId/report/weekly', async (req, res) => {
   try {
-    const { data: goals } = await supabase
+    const { data: goals } = await applyScope(supabase
       .from('goals')
       .select('*')
       .eq('user_id', req.params.userId)
-      .eq('status', 'active');
+      .eq('status', 'active'));
 
     if (!goals || goals.length === 0) {
       return res.json({ 
@@ -199,7 +226,8 @@ Only extract if message clearly states a goal/target/aim. Otherwise return [].`
         description: goal.description || '',
         category: goal.category || 'general',
         progress: 0,
-        status: 'active'
+        status: 'active',
+        ...scopeFields()
       }]);
     }
 
@@ -239,6 +267,7 @@ router.post('/:userId/create-with-breakdown', async (req, res) => {
 router.get('/:userId/breakdown/:goalId', async (req, res) => {
   try {
     const result = await getGoalBreakdown(req.params.userId, req.params.goalId);
+    if (currentScope() && result.success && !result.goal) return res.status(404).json(GOAL_NOT_FOUND);
     res.json(result);
   } catch (err) {
     logger.error(`Get breakdown error: ${err.message}`);
@@ -256,11 +285,11 @@ router.post('/:userId/generate-daily-plan', async (req, res) => {
     const userBehavior = await predictUserBehavior(userId);
 
     // Get active goals
-    const { data: activeGoals } = await supabase
+    const { data: activeGoals } = await applyScope(supabase
       .from('goal_breakdowns')
       .select('*')
       .eq('user_id', userId)
-      .eq('status', 'active');
+      .eq('status', 'active'));
 
     // Generate plan
     const planResult = await generateDailyPlan(
@@ -314,6 +343,14 @@ router.patch('/:userId/today-plan/complete-task', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Plan ID required' });
     }
 
+    // Layer 2 security fix: the plan must belong to the caller.
+    const { data: ownedPlan } = await supabase
+      .from('daily_execution_plan')
+      .select('id')
+      .eq('id', planId)
+      .eq('user_id', req.params.userId);
+    if (!ownedPlan || !ownedPlan.length) return res.status(404).json({ success: false, error: 'Plan not found' });
+
     const result = await updateTaskCompletion(planId, completedCount);
     res.json(result);
   } catch (err) {
@@ -325,6 +362,7 @@ router.patch('/:userId/today-plan/complete-task', async (req, res) => {
 // Conduct weekly review & get insights
 router.post('/:userId/review-weekly/:goalId', async (req, res) => {
   try {
+    if (!(await findOwnedBreakdownGoal(req.params.userId, req.params.goalId))) return res.status(404).json(GOAL_NOT_FOUND);
     const result = await conductWeeklyReview(req.params.userId, req.params.goalId);
     res.json(result);
   } catch (err) {
@@ -342,6 +380,7 @@ router.post('/:userId/adapt/:goalId', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Performance metric required' });
     }
 
+    if (!(await findOwnedBreakdownGoal(req.params.userId, req.params.goalId))) return res.status(404).json(GOAL_NOT_FOUND);
     const result = await adaptPlan(req.params.userId, req.params.goalId, performance);
     res.json(result);
   } catch (err) {
@@ -355,10 +394,10 @@ router.get('/:userId/all-with-breakdown', async (req, res) => {
   try {
     const { userId } = req.params;
 
-    const { data: goals, error } = await supabase
+    const { data: goals, error } = await applyScope(supabase
       .from('goal_breakdowns')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', userId))
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -373,6 +412,7 @@ router.get('/:userId/all-with-breakdown', async (req, res) => {
 // Get goal reviews (weekly insights)
 router.get('/:userId/reviews/:goalId', async (req, res) => {
   try {
+    if (!(await findOwnedBreakdownGoal(req.params.userId, req.params.goalId))) return res.status(404).json(GOAL_NOT_FOUND);
     const { data, error } = await supabase
       .from('goal_reviews')
       .select('*')

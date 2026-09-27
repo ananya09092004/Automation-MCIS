@@ -1,7 +1,36 @@
+/**
+ * Personal data controls (export / erase the CALLER's own rows).
+ *
+ * Layer 9: both operations are audited (table counts only, never the data);
+ * secret-looking columns (tokens, keys, passwords, ciphertext) are never
+ * included in an export; database error text is not echoed to the client.
+ * Scope: the user's OWN rows (user_id = caller) in every workspace they
+ * wrote them in — these are data-subject rights, so they intentionally span
+ * the user's workspaces but never touch other users' rows.
+ */
 const { createClient } = require('@supabase/supabase-js');
 const logger = require('./logger');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+let client = null;
+// Lazily created (first request), so requiring this module needs no configuration.
+function defaultDb() {
+  if (!client) client = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+  return client;
+}
+let supabaseOverride = null;
+const supabase = {
+  from: (t) => (supabaseOverride || defaultDb()).from(t),
+};
+/** TEST SEAM: route the module to another client (null restores the default). */
+function setDataControlsClient(c) { supabaseOverride = c || null; }
+
+const SECRET_COLUMN_RE = /(token|secret|password|passwd|api_?key|private_?key|credential|ciphertext|encrypted|auth_tag|\biv\b|key_hash)/i;
+function stripSecrets(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) out[k] = SECRET_COLUMN_RE.test(k) && v !== null && v !== undefined ? '[REDACTED]' : v;
+  return out;
+}
 
 const USER_DATA_TABLES = [
   'chats',
@@ -49,11 +78,11 @@ async function selectTableForUser(table, userId) {
     .eq('user_id', userId);
 
   if (error) {
-    logger.warn(`Data export skipped ${table}: ${error.message}`);
-    return { table, rows: [], skipped: true, reason: error.message };
+    logger.warn(`Data export skipped ${table}: ${error.code || 'error'}`);
+    return { table, rows: [], skipped: true, reason: error.code === '42P01' ? 'table not present' : 'not readable' };
   }
 
-  return { table, rows: data || [], skipped: false };
+  return { table, rows: (data || []).map(stripSecrets), skipped: false };
 }
 
 async function exportUserData(userId) {
@@ -80,8 +109,8 @@ async function deleteTableForUser(table, userId) {
     .eq('user_id', userId);
 
   if (error) {
-    logger.warn(`Data delete skipped ${table}: ${error.message}`);
-    return { table, deleted: false, reason: error.message };
+    logger.warn(`Data delete skipped ${table}: ${error.code || 'error'}`);
+    return { table, deleted: false, reason: error.code === '42P01' ? 'table not present' : 'not deleted' };
   }
 
   return { table, deleted: true };
@@ -105,6 +134,8 @@ async function deleteUserData(userId) {
 
 module.exports = {
   USER_DATA_TABLES,
+  stripSecrets,
+  setDataControlsClient,
   exportUserData,
   deleteUserData,
 };

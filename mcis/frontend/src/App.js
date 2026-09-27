@@ -669,6 +669,13 @@ function App() {
         <div className="mcis-sidebar-section-label">Intelligence</div>
         <button className="mcis-sidebar-nav-btn" onClick={() => setShowMemory(true)}><Brain size={16} /> Memory center</button>
         <button className="mcis-sidebar-nav-btn" onClick={() => setShowGoals(true)}><Target size={16} /> Goals</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/workspace'; }}><LayoutDashboard size={16} /> Workspace</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/workflows'; }}><LayoutDashboard size={16} /> Workflows</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/integrations'; }}><LayoutDashboard size={16} /> Integrations</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/security'; }}><LayoutDashboard size={16} /> Security</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/billing'; }}><LayoutDashboard size={16} /> Billing &amp; usage</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/developers'; }}><LayoutDashboard size={16} /> API docs</button>
+        <button className="mcis-sidebar-nav-btn" onClick={() => { window.location.href = '/onboarding'; }}><LayoutDashboard size={16} /> Get started</button>
         
         <div className="mcis-sidebar-search" style={{ margin: "0 12px 8px" }}>
           <div className="mcis-search-box" style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", color: theme.textMuted }}><Search size={15} /><input aria-label="Search chats" style={{ width: "100%", background: "transparent", border: "none", padding: "9px 0", color: theme.text, fontSize: 14, outline: "none", boxSizing: "border-box" }} placeholder="Search conversations" value={searchQuery} onChange={e => { setSearchQuery(e.target.value); searchChats(e.target.value); }} /></div>

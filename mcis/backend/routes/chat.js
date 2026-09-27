@@ -4,7 +4,10 @@ const rateLimit = require('express-rate-limit');
 const { createClient } = require('@supabase/supabase-js');
 const { askAI, askAIStream } = require('../services/ai');
 const { saveMemory, searchMemory } = require('../services/memory');
-const { saveChat, updateChatTitle, deleteChat, getUserChats, saveConversation, getHistory } = require('../services/database');
+const { saveChat, updateChatTitle, deleteChat, getUserChats, saveConversation, getHistory, findChat, isChatAccessible } = require('../services/database');
+// Layer 2: workspace scope of this request (set by middleware/workspaceDataScope.js)
+const { currentScope, applyScope, rowInScope } = require('../services/workspaceScope');
+const CHAT_NOT_FOUND = { success: false, error: 'Chat not found' };
 const { webSearch, needsSearch } = require('../services/search');
 const { getCache, setCache } = require('../services/cache');
 const { smartSaveMemory, smartSearchMemory, isFullRecallQuery, getFullMemoryDump } = require('../services/memoryManager');
@@ -82,6 +85,9 @@ router.get('/chats/:userId', async (req, res) => {
 router.post('/chats', async (req, res) => {
   try {
     const { chatId, userId, title } = req.body;
+    if (currentScope() && await findChat(chatId)) {
+      return res.status(409).json({ success: false, error: 'Chat id already exists' });
+    }
     await saveChat(chatId, userId, title);
 
     logger.info('=== WELCOME START === userId:', userId, 'chatId:', chatId);
@@ -99,7 +105,8 @@ router.post('/chats', async (req, res) => {
 router.patch('/chats/:chatId/rename', async (req, res) => {
   try {
     const { title } = req.body;
-    await updateChatTitle(req.params.chatId, title);
+    const updated = await updateChatTitle(req.params.chatId, title);
+    if (!updated) return res.status(404).json(CHAT_NOT_FOUND);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -109,7 +116,8 @@ router.patch('/chats/:chatId/rename', async (req, res) => {
 // Delete chat
 router.delete('/chats/:chatId', async (req, res) => {
   try {
-    await deleteChat(req.params.chatId);
+    const deleted = await deleteChat(req.params.chatId);
+    if (!deleted) return res.status(404).json(CHAT_NOT_FOUND);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -119,6 +127,7 @@ router.delete('/chats/:chatId', async (req, res) => {
 // Get messages
 router.get('/messages/:userId/:chatId', async (req, res) => {
   try {
+    if (!(await isChatAccessible(req.params.chatId))) return res.status(404).json(CHAT_NOT_FOUND);
     const history = await getHistory(req.params.userId, req.params.chatId);
     res.json({ success: true, messages: history });
   } catch (err) {
@@ -136,21 +145,30 @@ router.get('/search/:userId', async (req, res) => {
       return res.json({ success: true, results: [] });
     }
 
-    const { data, error } = await supabase
+    // Layer 2: characters with meaning in PostgREST filter syntax are removed
+    // so the search text can never add conditions to the filter.
+    const term = String(q).replace(/[,()*%\\]/g, ' ').trim().slice(0, 200);
+    if (!term) return res.json({ success: true, results: [] });
+    const scope = currentScope();
+
+    const { data: rawData, error } = await supabase
       .from('conversations')
-      .select('id, message, response, chat_id, created_at')
+      .select(scope ? 'id, message, response, chat_id, created_at, workspace_id' : 'id, message, response, chat_id, created_at')
       .eq('user_id', userId)
-      .or(`message.ilike.%${q}%,response.ilike.%${q}%`)
+      .or(`message.ilike.%${term}%,response.ilike.%${term}%`)
       .order('created_at', { ascending: false })
-      .limit(20);
+      .limit(scope ? 100 : 20);
 
     if (error) throw error;
+    const data = (rawData || []).filter(r => rowInScope(r, scope)).slice(0, 20)
+      .map(({ workspace_id, ...rest }) => rest);
 
     const chatIds = [...new Set(data.map(r => r.chat_id))];
-    const { data: chatsData } = await supabase
+    const { data: chatsData } = await applyScope(supabase
       .from('chats')
       .select('id, title')
-      .in('id', chatIds);
+      .eq('user_id', userId)
+      .in('id', chatIds), scope);
 
     const chatTitleMap = {};
     chatsData?.forEach(c => { chatTitleMap[c.id] = c.title; });
@@ -175,10 +193,26 @@ router.post('/edit', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    await supabase
+    // Layer 2: the edited message must belong to the caller, in this
+    // workspace, in an accessible chat (previously any message id worked).
+    const editScope = currentScope();
+    if (editScope) {
+      const { data: owned } = await applyScope(supabase
+        .from('conversations')
+        .select('id')
+        .eq('id', messageId)
+        .eq('user_id', editScope.userId)
+        .eq('chat_id', chatId), editScope);
+      if (!owned || !owned.length || !(await isChatAccessible(chatId))) {
+        res.write(`data: ${JSON.stringify({ error: 'Message not found' })}\n\n`);
+        return res.end();
+      }
+    }
+
+    await applyScope(supabase
       .from('conversations')
       .update({ message: newMessage })
-      .eq('id', messageId);
+      .eq('id', messageId), editScope);
 
     const plan = await planQuery(newMessage);
 
@@ -229,10 +263,10 @@ router.post('/edit', async (req, res) => {
     res.write('data: [DONE]\n\n');
     res.end();
 
-    await supabase
+    await applyScope(supabase
       .from('conversations')
       .update({ response: fullResponse })
-      .eq('id', messageId);
+      .eq('id', messageId), editScope);
 
     await smartSaveMemory(userId, newMessage, fullResponse);
     await extractAndSaveOperatingContext(userId, newMessage, fullResponse, chatId);
@@ -249,6 +283,15 @@ router.post('/stream', checkDailyLimit, async (req, res) => {
     const { userId, message, chatId } = req.body;
     if (!userId || !message || !chatId) {
       return res.status(400).json({ success: false, error: 'userId, message and chatId required' });
+    }
+    // Layer 2: an EXISTING chat must be accessible in this workspace. A chat
+    // id with no row yet keeps the previous behaviour (conversation rows are
+    // still written with this workspace's scope).
+    if (currentScope()) {
+      const existingChat = await findChat(chatId);
+      if (existingChat && !(await isChatAccessible(chatId))) {
+        return res.status(404).json(CHAT_NOT_FOUND);
+      }
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
@@ -821,6 +864,7 @@ Or empty {} if none.`;
 router.get('/welcome/:userId/:chatId', async (req, res) => {
   try {
     const { userId, chatId } = req.params;
+    if (!(await isChatAccessible(chatId))) return res.status(404).json(CHAT_NOT_FOUND);
     const welcomeMessage = await generateWelcomeMessage(userId, chatId);
     res.json({ success: true, welcomeMessage });
   } catch (err) {

@@ -1,5 +1,9 @@
 const axios = require('axios');
 const { createClient } = require('@supabase/supabase-js');
+// Layer 2: memories written/searched inside a workspace-scoped request are
+// limited to that workspace (see services/workspaceScope.js). Unscoped
+// callers — e.g. the voice pipeline's memoryHooks.logAction — are unchanged.
+const { currentScope, scopeFields } = require('./workspaceScope');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -128,7 +132,8 @@ async function saveMemory(userId, text) {
         user_id: userId,
         content: text,
         embedding: JSON.stringify(embedding),
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        ...scopeFields()
       }]);
 
     if (error) throw error;
@@ -156,11 +161,40 @@ async function searchMemory(userId, query, { similarityThreshold = 0, raw = fals
     const embedding = await getEmbedding(query, 'query'); // ✅ searching — correct mode now
     if (!embedding) return raw ? [] : '';
 
-    const { data, error } = await supabase.rpc('search_memories', {
-      query_embedding: JSON.stringify(embedding),
-      match_user_id: userId,
-      match_count: 8
-    });
+    const scope = currentScope();
+    let data;
+    let error;
+    if (scope) {
+      // Workspace-scoped search (migration 20260925_layer2...). Personal
+      // workspace also sees legacy/unscoped (NULL) memories; a team
+      // workspace sees only its own.
+      ({ data, error } = await supabase.rpc('search_memories_scoped', {
+        query_embedding: JSON.stringify(embedding),
+        match_user_id: String(userId),
+        match_workspace_id: scope.workspaceId,
+        include_unscoped: scope.isPersonal,
+        match_count: 8
+      }));
+      if (error && !scope.isPersonal) {
+        // Fail CLOSED for team workspaces: never fall back to the unscoped RPC.
+        console.error('Scoped memory search unavailable:', error.message);
+        return raw ? [] : '';
+      }
+      if (error) {
+        console.warn('search_memories_scoped unavailable, using legacy personal search:', error.message);
+        ({ data, error } = await supabase.rpc('search_memories', {
+          query_embedding: JSON.stringify(embedding),
+          match_user_id: userId,
+          match_count: 8
+        }));
+      }
+    } else {
+      ({ data, error } = await supabase.rpc('search_memories', {
+        query_embedding: JSON.stringify(embedding),
+        match_user_id: userId,
+        match_count: 8
+      }));
+    }
 
     if (error) throw error;
     if (!data || !data.length) return raw ? [] : '';

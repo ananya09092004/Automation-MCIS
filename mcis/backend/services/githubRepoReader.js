@@ -1,7 +1,5 @@
-const { createClient } = require('@supabase/supabase-js');
 const logger = require('./logger');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 const GITHUB_URL_REGEX = /https?:\/\/github\.com\/([\w.-]+)\/([\w.-]+)(?:\/(?:tree|blob)\/([\w.-]+))?/i;
 
@@ -20,21 +18,14 @@ function extractGithubUrl(message) {
   return { owner: match[1], repo: match[2].replace(/\.git$/, ''), branch: match[3] || null };
 }
 
-// ✅ FIX: this previously queried a `github_connections` table with an
-// `access_token` column that don't exist in this codebase. The actual
-// OAuth token is stored by services/githubService.js in the
-// `user_integrations` table, under the `github_token` column (see
-// exchangeCodeForToken() / getUserToken() in that file). With the wrong
-// names this always silently returned null — private repos would fail
-// with "Repo not found" even for a user who had connected GitHub.
+// Layer 6: the user's GitHub OAuth token now lives ENCRYPTED in the Layer 5
+// integration store (services/security/githubOAuth.js); the legacy plaintext
+// user_integrations.github_token column is no longer read. The token is only
+// used for the GitHub API request headers below — never logged or returned.
 async function getUserGithubToken(userId) {
   try {
-    const { data } = await supabase
-      .from('user_integrations')
-      .select('github_token')
-      .eq('user_id', userId)
-      .single();
-    return data?.github_token || null;
+    const conn = await require('./security/githubOAuth').getDefaultGithubAccountService().getUserToken(userId);
+    return conn ? conn.token : null;
   } catch {
     return null;
   }

@@ -1,81 +1,106 @@
 // backend/routes/github.js
+//
+// Legacy per-user GitHub connection. Same URLs and response shapes as
+// before; Layer 6 moved storage to the encrypted integration store and
+// replaced the guessable state (see services/githubService.js).
+//
+//   GET    /api/github/connect/:userId     → { success, url }       (auth; :userId must be the caller)
+//   GET    /api/github/callback            → redirect to the frontend  (public; the single-use state is the binding)
+//   GET    /api/github/status/:userId      → { connected, username }
+//   DELETE /api/github/disconnect/:userId  → { success, message }
+//   POST   /api/github/push                → push files to the CALLER's GitHub (body.userId, if sent, must be the caller)
 
-const express       = require('express');
-const router        = express.Router();
-const githubService = require('../services/githubService');
-const { createClient } = require('@supabase/supabase-js');
-const logger        = require('../services/logger');
+const express = require('express');
+const logger = require('../services/logger');
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
-
-// ─── GET /api/github/connect/:userId ─────────────────────────────────────────
-router.get('/connect/:userId', (req, res) => {
-  try {
-    const { userId } = req.params;
-    const url = githubService.getOAuthURL(userId);
-    res.json({ success: true, url });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─── GET /api/github/callback ────────────────────────────────────────────────
-router.get('/callback', async (req, res) => {
-  try {
-    const { code, state } = req.query;
-    if (!code || !state) return res.status(400).send('Missing code or state');
-    const result = await githubService.exchangeCodeForToken(code, state);
-    res.redirect(`${FRONTEND_URL}/settings?github=connected&username=${result.username}`);
-  } catch (err) {
-    logger.error(`GitHub callback error: ${err.message}`);
-    res.redirect(`${FRONTEND_URL}/settings?github=error`);
-  }
-});
-
-// ─── GET /api/github/status/:userId ──────────────────────────────────────────
-router.get('/status/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const integration = await githubService.getUserToken(userId);
-    res.json({
-      connected: !!integration,
-      username:  integration?.github_username || null,
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─── DELETE /api/github/disconnect/:userId ───────────────────────────────────
-router.delete('/disconnect/:userId', async (req, res) => {
-  try {
-    const { userId } = req.params;
-    const { error } = await supabase
-      .from('user_integrations')
-      .update({ github_token: null, github_username: null, updated_at: new Date().toISOString() })
-      .eq('user_id', userId);
-    if (error) throw error;
-    res.json({ success: true, message: 'GitHub disconnected' });
-  } catch (err) {
-    logger.error(`GitHub disconnect error: ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ─── POST /api/github/push ───────────────────────────────────────────────────
-router.post('/push', async (req, res) => {
-  try {
-    const { userId, repoName, description, files } = req.body;
-    if (!userId || !repoName || !files?.length) {
-      return res.status(400).json({ error: 'userId, repoName, files required' });
+function createGithubRouter({ githubService = require('../services/githubService'), frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000' } = {}) {
+  const router = express.Router();
+  const safeStatus = (err) => (err && Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500);
+  const safeMessage = (err, fallback) => (err && err.status && err.status < 500 ? err.message : fallback);
+  // The auth middleware already rejects a :userId that is not the caller;
+  // this keeps the check local too (defence in depth).
+  const callerOnly = (req, res) => {
+    if (req.user && req.user.uid && req.params.userId !== req.user.uid) {
+      res.status(403).json({ success: false, error: 'Forbidden for this user' });
+      return false;
     }
-    const result = await githubService.createRepoAndPush(userId, { repoName, description, files });
-    res.json({ success: true, ...result });
-  } catch (err) {
-    logger.error(`GitHub push error: ${err.message}`);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
+    return true;
+  };
 
-module.exports = router;
+  router.get('/connect/:userId', async (req, res) => {
+    if (!callerOnly(req, res)) return;
+    try {
+      const url = await githubService.getOAuthURL(req.params.userId);
+      res.json({ success: true, url });
+    } catch (err) {
+      logger.error(`GitHub connect error: ${err.code || 'error'}`);
+      res.status(safeStatus(err)).json({ success: false, error: safeMessage(err, 'Could not start the GitHub connection.') });
+    }
+  });
+
+  router.get('/callback', async (req, res) => {
+    const code = typeof req.query.code === 'string' ? req.query.code : '';
+    const state = typeof req.query.state === 'string' ? req.query.state : '';
+    if (!code || !state) return res.redirect(`${frontendUrl}/settings?github=error`);
+    // Workspace-level connections are completed by an AUTHENTICATED request
+    // from the frontend (the caller must be the user the state was issued
+    // to). Code/state go in the URL fragment, which is never sent to a server.
+    if (state.startsWith('w.')) {
+      return res.redirect(`${frontendUrl}/security#oauth=github&code=${encodeURIComponent(code)}&state=${encodeURIComponent(state)}`);
+    }
+    try {
+      const result = await githubService.exchangeCodeForToken(code, state);
+      return res.redirect(`${frontendUrl}/settings?github=connected&username=${encodeURIComponent(result.username)}`);
+    } catch (err) {
+      // No details (state validity, GitHub errors, tokens) leave the server.
+      logger.warn(`GitHub callback rejected: ${err.code || 'error'}`);
+      return res.redirect(`${frontendUrl}/settings?github=error`);
+    }
+  });
+
+  router.get('/status/:userId', async (req, res) => {
+    if (!callerOnly(req, res)) return;
+    try {
+      const s = await githubService.getStatus(req.params.userId);
+      res.json({ connected: !!s.connected, username: s.username || null });
+    } catch (err) {
+      logger.error(`GitHub status error: ${err.code || 'error'}`);
+      res.status(500).json({ success: false, error: 'Could not read the GitHub connection status.' });
+    }
+  });
+
+  router.delete('/disconnect/:userId', async (req, res) => {
+    if (!callerOnly(req, res)) return;
+    try {
+      await githubService.disconnect(req.params.userId);
+      res.json({ success: true, message: 'GitHub disconnected' });
+    } catch (err) {
+      logger.error(`GitHub disconnect error: ${err.code || 'error'}`);
+      res.status(500).json({ success: false, error: 'Could not disconnect GitHub.' });
+    }
+  });
+
+  router.post('/push', async (req, res) => {
+    try {
+      const { userId, repoName, description, files } = req.body || {};
+      // Previously the target account came from body.userId — any signed-in
+      // user could push with someone else's token. It is now the caller.
+      const caller = req.user && req.user.uid;
+      if (!caller) return res.status(401).json({ success: false, error: 'Authentication required' });
+      if (userId !== undefined && userId !== caller) return res.status(403).json({ success: false, error: 'Forbidden for this user' });
+      if (!repoName || !Array.isArray(files) || !files.length) {
+        return res.status(400).json({ error: 'repoName, files required' });
+      }
+      const result = await githubService.createRepoAndPush(caller, { repoName, description, files });
+      res.json({ success: true, ...result });
+    } catch (err) {
+      logger.error(`GitHub push error: ${err.code || 'error'}`);
+      res.status(500).json({ success: false, error: String(err.message || 'GitHub push failed').slice(0, 200) });
+    }
+  });
+
+  return router;
+}
+
+module.exports = createGithubRouter();
+module.exports.createGithubRouter = createGithubRouter;

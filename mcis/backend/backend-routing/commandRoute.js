@@ -1,7 +1,5 @@
 const express = require('express');
 const router = express.Router();
-const { createClient } = require('@supabase/supabase-js');
-const getFirebaseAdmin = require('../config/firebaseAdmin');
 const { classifyIntent, NEXUS_ACTIONS } = require('../backend-routing/intentRouter');
 const { sendCommandToAgent } = require('../agentSocket');
 const { sendCommandToNexus } = require('../backend-routing/nexusBridge');
@@ -16,7 +14,7 @@ const { tryFastPath } = require('../backend-routing/fastPath');
 const taskContext = require('../backend-routing/taskContext');
 const { classifyRisk } = require('../backend-routing/riskModel');
 const { askAI } = require('../services/ai');
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+const { resolveVoiceDeviceUserId, resolveUserId, requireCaller } = require('../security-engine/callerIdentity');
 
 // PASS 2: the old flat HIGH_RISK_ACTIONS list (and needsConfirmation
 // checks below) is superseded by riskModel.js's 3-tier GREEN/YELLOW/RED
@@ -68,57 +66,10 @@ const PRODUCTIVITY_HANDLERS = {
   listUpcomingEvents: (userId, p) => calendar.listUpcomingEvents(userId, p.maxResults)
 };
 
-const USER_ID_CACHE_TTL_MS = 5 * 60 * 1000;
-const userIdCache = new Map();
-
-// nexus/voice/voice_controller.py never sent an Authorization header at
-// all -- every voice command hit resolveUserId() with token=null,  fell
-// straight through to the NODE_ENV/ALLOW_UNAUTHENTICATED_API dev-bypass
-// check below, and got 'test-user-123' ONLY if that flag happened to be
-// set. In any environment where it wasn't (e.g. NODE_ENV=production on
-// a real deploy), every single voice command would 401 with no other
-// symptom. This is a real, lightweight device-secret check instead --
-// no network round trip (unlike the Firebase/Supabase path below), and
-// it doesn't depend on a "for testing" flag to work at all.
-const VOICE_DEVICE_TOKEN = process.env.NEXUS_VOICE_DEVICE_TOKEN || null;
-
-function resolveVoiceDeviceUserId(req) {
-  if (!VOICE_DEVICE_TOKEN) return null;
-  const provided = req.headers['x-device-token'];
-  if (!provided || provided !== VOICE_DEVICE_TOKEN) return null;
-  const deviceId = req.body?.deviceId || 'voice-device';
-  return `voice-device:${deviceId}`;
-}
-
-async function resolveUserId(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-
-  const cached = userIdCache.get(token);
-  if (cached && Date.now() - cached.at < USER_ID_CACHE_TTL_MS) {
-    return cached.userId;
-  }
-
-  try {
-    const admin = getFirebaseAdmin();
-    const decoded = await admin.auth().verifyIdToken(token);
-    userIdCache.set(token, { userId: decoded.uid, at: Date.now() });
-    return decoded.uid;
-  } catch {
-    // not a valid Firebase token — fall through to device token check
-  }
-
-  const { data, error } = await supabase
-    .from('device_tokens')
-    .select('user_id')
-    .eq('token', token)
-    .single();
-
-  if (error || !data) return null;
-  userIdCache.set(token, { userId: data.user_id, at: Date.now() });
-  return data.user_id;
-}
+// Caller resolution (voice device token → Firebase → paired-device token)
+// lives in security-engine/callerIdentity.js so /api/permissions/grant,
+// /api/emergency/* and the goal status/answer routes identify callers
+// exactly the same way as this route. Moved verbatim, behaviour unchanged.
 
 // Voice-side retries (voice_controller.py's _post_command, on a dropped
 // connection) resend the SAME commandId rather than a fresh one, so a
@@ -344,21 +295,28 @@ router.post('/', async (req, res) => {
   }
 });
 
-router.get('/goal/:planId/status', (req, res) => {
-  const status = taskPlanner.getPlanStatus(req.params.planId);
+// Both goal routes are exempt from the global Firebase middleware (the
+// voice client authenticates with X-Device-Token), so they resolve the
+// caller themselves and only expose/steer the caller's OWN plan.
+// Unknown and foreign plan ids get the same 404.
+router.get('/goal/:planId/status', requireCaller, (req, res) => {
+  const status = taskPlanner.getPlanStatus(req.params.planId, req.callerId);
   if (status.type === 'plan_error' && !status.status) {
     return res.status(404).json(status);
   }
   res.json(status);
 });
 
-router.post('/goal/:planId/answer', async (req, res) => {
+router.post('/goal/:planId/answer', requireCaller, async (req, res) => {
   const { answer } = req.body;
   if (!answer) {
     return res.status(400).json({ error: 'answer required' });
   }
-  const result = taskPlanner.submitClarification(req.params.planId, answer);
-  await logAction(req.body.userId || 'test-user-123', 'goal_clarification_answer', { planId: req.params.planId, answer }, result);
+  const result = taskPlanner.submitClarification(req.params.planId, answer, req.callerId);
+  if (result.code === 'PLAN_NOT_FOUND') {
+    return res.status(404).json(result);
+  }
+  await logAction(req.callerId, 'goal_clarification_answer', { planId: req.params.planId, answer }, result);
   res.json(result);
 });
 

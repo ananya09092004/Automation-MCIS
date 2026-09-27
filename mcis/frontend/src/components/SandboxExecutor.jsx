@@ -227,10 +227,10 @@ export default function SandboxExecutor({ userId }) {
   useEffect(() => {
     if (!githubStatus?.connected || !userId) return;
     try {
-      const pending = localStorage.getItem('mcis_pending_push');
+      const pending = sessionStorage.getItem('mcis_pending_push');
       if (!pending) return;
       const data = JSON.parse(pending);
-      localStorage.removeItem('mcis_pending_push');
+      sessionStorage.removeItem('mcis_pending_push');
       doPush(data.projectName, data.description, data.files, data.goal, data.language);
     } catch (_) {}
   }, [githubStatus?.connected]);
@@ -240,7 +240,7 @@ export default function SandboxExecutor({ userId }) {
   // ── Connect GitHub (save pending push if files exist) ────────────────────
   const connectGitHub = useCallback(async () => {
     if (files.length > 0 && projectInfo) {
-      localStorage.setItem('mcis_pending_push', JSON.stringify({
+      sessionStorage.setItem('mcis_pending_push', JSON.stringify({
         projectName: projectInfo.name,
         description: projectInfo.description,
         goal, language,
@@ -290,7 +290,8 @@ export default function SandboxExecutor({ userId }) {
             codespacesUrl: data.codespacesUrl,
           }),
         }).catch(() => {});
-        if (data.repoUrl) window.open(data.repoUrl, '_blank');
+        // Layer 9: open only https links, without giving the new tab a handle on this one.
+        if (typeof data.repoUrl === 'string' && data.repoUrl.startsWith('https://')) window.open(data.repoUrl, '_blank', 'noopener,noreferrer');
       } else {
         alert('Push failed: ' + (data.error || 'Unknown error'));
       }

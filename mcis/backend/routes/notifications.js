@@ -35,12 +35,19 @@ router.patch('/:notifId/read', async (req, res) => {
   try {
     const { notifId } = req.params;
 
-    const { error } = await supabase
+    // Layer 2 security fix: notifications are a per-user inbox — only the
+    // owner may change one (previously any id worked).
+    let q = supabase
       .from('notifications')
       .update({ read: true })
       .eq('id', notifId);
+    if (req.user && req.user.uid) q = q.eq('user_id', req.user.uid);
+    const { data: changed, error } = await q.select('id');
 
     if (error) throw error;
+    if (req.user && req.user.uid && !(changed && changed.length)) {
+      return res.status(404).json({ success: false, error: 'Notification not found' });
+    }
 
     logger.info(`Notification ${notifId} marked as read`);
     res.json({ success: true });
@@ -55,12 +62,17 @@ router.delete('/:notifId', async (req, res) => {
   try {
     const { notifId } = req.params;
 
-    const { error } = await supabase
+    let q = supabase
       .from('notifications')
       .delete()
       .eq('id', notifId);
+    if (req.user && req.user.uid) q = q.eq('user_id', req.user.uid);
+    const { data: removed, error } = await q.select('id');
 
     if (error) throw error;
+    if (req.user && req.user.uid && !(removed && removed.length)) {
+      return res.status(404).json({ success: false, error: 'Notification not found' });
+    }
 
     logger.info(`Notification ${notifId} deleted`);
     res.json({ success: true });

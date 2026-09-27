@@ -13,7 +13,9 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 //   created_at timestamptz default now()
 // );
 
-async function appendAuditLog(userId, action, payload, result) {
+// workspaceId is optional (Layer 2). Existing callers — including the voice
+// command path — pass 4 arguments and write exactly the same row as before.
+async function appendAuditLog(userId, action, payload, result, workspaceId = null) {
   const entry = {
     user_id: userId,
     action,
@@ -21,6 +23,7 @@ async function appendAuditLog(userId, action, payload, result) {
     success: !!(result && result.success),
     error: result && result.error ? String(result.error) : null
   };
+  if (workspaceId) entry.workspace_id = workspaceId;
 
   const { error } = await supabase.from('audit_log').insert(entry);
   if (error) console.error('Audit log write failed:', error.message);
@@ -39,4 +42,19 @@ async function getAuditLog(userId, limit = 50) {
   return data;
 }
 
-module.exports = { appendAuditLog, getAuditLog };
+// Workspace audit trail (Layer 2). Callers MUST pass a workspace id that was
+// resolved server-side and authorize the reader (admin/owner) themselves.
+async function getWorkspaceAuditLog(workspaceId, { limit = 50, before = null } = {}) {
+  let q = supabase
+    .from('audit_log')
+    .select('id, user_id, action, payload, success, error, created_at')
+    .eq('workspace_id', workspaceId)
+    .order('created_at', { ascending: false })
+    .limit(Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200));
+  if (before) q = q.lt('created_at', before);
+  const { data, error } = await q;
+  if (error) throw error;
+  return data || [];
+}
+
+module.exports = { appendAuditLog, getAuditLog, getWorkspaceAuditLog };

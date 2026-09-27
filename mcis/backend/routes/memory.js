@@ -7,13 +7,26 @@ const supabase = createClient(
   process.env.SUPABASE_KEY
 );
 
+// Layer 2: inside a workspace-scoped request, a memory is only visible /
+// editable / deletable by its OWNER in the SAME workspace. (Previously
+// DELETE/PATCH /:memoryId worked on any id, and deleting a memory removed
+// every user's vectors with the same content.)
+const { currentScope, applyScope } = require('../services/workspaceScope');
+const MEMORY_NOT_FOUND = { success: false, error: 'Memory not found' };
+
+function ownedMemoryQuery(query) {
+  const scope = currentScope();
+  if (!scope) return query;
+  return applyScope(query.eq('user_id', scope.userId), scope);
+}
+
 // Get all memories for user
 router.get('/:userId', async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await applyScope(supabase
       .from('user_memories')
       .select('*')
-      .eq('user_id', req.params.userId)
+      .eq('user_id', req.params.userId))
       .order('created_at', { ascending: false });
 
     if (error) throw error;
@@ -27,26 +40,31 @@ router.get('/:userId', async (req, res) => {
 router.delete('/:memoryId', async (req, res) => {
   try {
     // user_memories se content lo
-    const { data } = await supabase
+    const scope = currentScope();
+    const { data: rows } = await ownedMemoryQuery(supabase
       .from('user_memories')
-      .select('content')
-      .eq('id', req.params.memoryId)
-      .single();
+      .select('content, user_id')
+      .eq('id', req.params.memoryId));
+    const data = rows && rows[0];
+    if (scope && !data) return res.status(404).json(MEMORY_NOT_FOUND);
 
     // user_memories se delete karo
-    const { error } = await supabase
+    const { error } = await ownedMemoryQuery(supabase
       .from('user_memories')
       .delete()
-      .eq('id', req.params.memoryId);
+      .eq('id', req.params.memoryId));
 
     if (error) throw error;
 
     // memory_vectors se bhi delete karo â€” same content match karke
+    // (Layer 2: only the owner's vectors in this workspace)
     if (data?.content) {
-      await supabase
+      let vq = supabase
         .from('memory_vectors')
         .delete()
         .eq('content', data.content);
+      vq = scope ? ownedMemoryQuery(vq) : (data.user_id ? vq.eq('user_id', data.user_id) : vq);
+      await vq;
     }
 
     res.json({ success: true });
@@ -60,12 +78,14 @@ router.patch('/:memoryId', async (req, res) => {
   try {
     const { content } = req.body;
 
-    const { error } = await supabase
+    const { data: updated, error } = await ownedMemoryQuery(supabase
       .from('user_memories')
       .update({ content })
-      .eq('id', req.params.memoryId);
+      .eq('id', req.params.memoryId))
+      .select('id, workspace_id'); // or() filters need their columns in the returned set
 
     if (error) throw error;
+    if (currentScope() && !(updated && updated.length)) return res.status(404).json(MEMORY_NOT_FOUND);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -79,10 +99,10 @@ router.post('/nl-delete/:userId', async (req, res) => {
     const { query } = req.body;
 
     // Saari memories fetch karo
-    const { data: memories, error } = await supabase
+    const { data: memories, error } = await applyScope(supabase
       .from('user_memories')
       .select('*')
-      .eq('user_id', userId);
+      .eq('user_id', userId));
 
     if (error) throw error;
     if (!memories?.length) return res.json({ success: true, deleted: 0 });
@@ -117,26 +137,34 @@ No explanation, just the JSON array.`
     }
 
     // Delete hone wali memories ka content lo
+    // Layer 2: only ids that were actually in THIS user's (scoped) list —
+    // the model's output is never trusted to name other rows.
     const toDelete = memories.filter(m => idsToDelete.includes(m.id));
+    const safeIds = toDelete.map(m => m.id);
     const contentsToDelete = toDelete.map(m => m.content);
+    if (!safeIds.length) {
+      return res.json({ success: true, deleted: 0, message: 'No matching memories found' });
+    }
 
     // user_memories se delete karo
-    const { error: delError } = await supabase
+    const { error: delError } = await applyScope(supabase
       .from('user_memories')
       .delete()
-      .in('id', idsToDelete);
+      .eq('user_id', userId)
+      .in('id', safeIds));
 
     if (delError) throw delError;
 
     // memory_vectors se bhi delete karo
     if (contentsToDelete.length > 0) {
-      await supabase
+      await applyScope(supabase
         .from('memory_vectors')
         .delete()
-        .in('content', contentsToDelete);
+        .eq('user_id', userId)
+        .in('content', contentsToDelete));
     }
 
-    res.json({ success: true, deleted: idsToDelete.length });
+    res.json({ success: true, deleted: safeIds.length });
   } catch (err) {
     console.error('NL delete error:', err);
     res.status(500).json({ success: false, error: err.message });

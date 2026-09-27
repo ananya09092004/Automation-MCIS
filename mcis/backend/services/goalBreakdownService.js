@@ -8,6 +8,8 @@ const supabase = createClient(
 );
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// Layer 2: smart goals are workspace-scoped inside a scoped request.
+const { applyScope, scopeFields } = require('./workspaceScope');
 
 // Break down goal into phases
 async function breakDownGoal(goal, timelineMonths = 6) {
@@ -96,7 +98,8 @@ async function createGoalWithBreakdown(userId, goalTitle, goalDescription, targe
         tasks_total: breakdown.milestones?.length || 5,
         status: 'active',
         created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString()
+        updated_at: new Date().toISOString(),
+        ...scopeFields()
       }])
       .select();
 
@@ -113,11 +116,11 @@ async function createGoalWithBreakdown(userId, goalTitle, goalDescription, targe
 // Get goal with breakdown
 async function getGoalBreakdown(userId, goalId) {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await applyScope(supabase
       .from('goal_breakdowns')
       .select('*')
       .eq('user_id', userId)
-      .eq('id', goalId)
+      .eq('id', goalId))
       .single();
 
     if (error && error.code !== 'PGRST116') throw error;

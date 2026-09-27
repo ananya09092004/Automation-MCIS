@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { auth } from "./firebase";
-import { createUserWithEmailAndPassword, signInWithEmailAndPassword } from "firebase/auth";
+import { createUserWithEmailAndPassword, sendEmailVerification, signInWithEmailAndPassword } from "firebase/auth";
 import { ArrowRight, Brain, BriefcaseBusiness, CheckCircle2, LockKeyhole, Sparkles } from "lucide-react";
 import AmbientBackground from "./components/AmbientBackground";
 
@@ -40,6 +40,12 @@ function Auth({ onLogin }) {
       const userCred = isSignup
         ? await createUserWithEmailAndPassword(auth, email, password)
         : await signInWithEmailAndPassword(auth, email, password);
+      // Layer 9: workspace invitations require a verified email, so new
+      // accounts get the verification email right away (best effort; it can
+      // be re-sent from the Workspace → Team page).
+      if (isSignup && userCred.user && !userCred.user.emailVerified) {
+        try { await sendEmailVerification(userCred.user); } catch { /* resend is available later */ }
+      }
       onLogin(userCred.user);
     } catch (err) {
       setError(err.message.replace("Firebase: ", ""));

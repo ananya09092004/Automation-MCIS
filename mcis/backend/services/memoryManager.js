@@ -1,6 +1,8 @@
 const { saveMemory, searchMemory } = require('./memory');
 const { createClient } = require('@supabase/supabase-js');
 const { detectAndSavePreferences } = require('./preferencesService');
+// Layer 2: workspace scope for user_memories / memory_vectors (see services/workspaceScope.js)
+const { applyScope, scopeFields } = require('./workspaceScope');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -271,10 +273,10 @@ function isFullRecallQuery(message) {
 
 async function getFullMemoryDump(userId) {
   try {
-    const { data, error } = await supabase
+    const { data, error } = await applyScope(supabase
       .from('memory_vectors')
       .select('content, created_at')
-      .eq('user_id', userId)
+      .eq('user_id', userId))
       .order('created_at', { ascending: false })
       .limit(300); // hard top-5/15 nahi — generous safety ceiling sirf
 
@@ -331,7 +333,8 @@ async function saveToSupabase(userId, content, category) {
         user_id: userId,
         category,
         content,
-        created_at: new Date().toISOString()
+        created_at: new Date().toISOString(),
+        ...scopeFields()
       }]);
     if (error) console.error('Supabase memory save error:', error.message);
   } catch (err) {
