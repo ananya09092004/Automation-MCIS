@@ -130,7 +130,14 @@ const appendAuditLog = async (userId, action, payload, result, workspaceId) => {
 };
 
 const wsService = createWorkspaceService(wsStore, { requireVerifiedEmail: true });
-const LEASE = SUPA ? 2 : 2;
+// Job lease used by the test runners. Memory mode "expires" leases by jumping
+// the clock (expireLeases / advance), so a longer lease costs no test time;
+// it only has to outlast an event-loop stall of the test process. With 2 s, a
+// ~2 s stall (GC / antivirus / load, seen on Windows) let a LIVE worker's own
+// lease expire and re-claim its job → an extra "recovery", which broke the
+// max_recoveries test. Production uses 60 s (heartbeat 15 s). PostgreSQL mode
+// waits in real time, so it keeps 2 s.
+const LEASE = SUPA ? 2 : 10;
 const RUNNER_OPTS = {
   now, leaseSeconds: LEASE, heartbeatMs: 100, idlePollMs: 25, execPollMs: 5, busyRetryMs: 25,
   busyMaxWaitMs: 60000, schedulerIntervalMs: 0, stopTimeoutMs: 2000,
@@ -266,7 +273,14 @@ async function run() {
   }
   async function expireLeases() {
     if (SUPA) { await sleep(LEASE * 1000 + 700); return; }
-    clockOffset += LEASE * 1000 + 1000;
+    // Let a heartbeat the "crashed" worker already had in flight land first;
+    // otherwise it can renew the old lease AFTER the clock jump and delay the
+    // recovery by a whole lease. Then jump past the latest lease actually held.
+    await sleep(RUNNER_OPTS.heartbeatMs);
+    const t = now().getTime();
+    let latest = t + LEASE * 1000;
+    for (const j of wfStore._jobs.values()) if (j.status === 'running' && j.lease_expires_at) latest = Math.max(latest, Date.parse(j.lease_expires_at));
+    clockOffset += latest - t + 1000;
   }
 
   sys.runner.start();
