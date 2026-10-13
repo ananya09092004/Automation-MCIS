@@ -1,0 +1,58 @@
+# Deployment packaging for the competitor-monitoring / revenue MVP
+# (backend + frontend). This does NOT self-host Supabase or Firebase --
+# per CUSTOMER_SETUP.md those are external managed services (your own
+# Supabase project, your own Firebase project) that this stack connects
+# to over the network, not containers this compose file should own.
+#
+# Real first run:
+#   cp mcis/backend/.env.example mcis/backend/.env.production   # fill it in
+#   cp mcis/frontend/.env.example mcis/frontend/.env.production # fill it in
+#   docker compose --env-file mcis/frontend/.env.production build frontend
+#   docker compose up -d
+#
+# Before first boot, apply mcis/backend/migrations/*.up.sql against your
+# Supabase Postgres instance in order (this compose file does not run
+# migrations for you -- see CUSTOMER_SETUP.md section 2).
+
+services:
+  backend:
+    build:
+      context: ./mcis/backend
+      dockerfile: Dockerfile
+    env_file:
+      - ./mcis/backend/.env.production
+    environment:
+      - NODE_ENV=production
+      - PORT=5051
+    ports:
+      - "5051:5051"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:5051/health', (r) => process.exit(r.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./mcis/frontend
+      dockerfile: Dockerfile
+      args:
+        # CRA bakes these in at build time (see frontend Dockerfile's own
+        # comment) -- docker compose fills them from the shell/.env file
+        # you pass via --env-file, not from frontend's own env_file below.
+        REACT_APP_API_URL: ${REACT_APP_API_URL:-http://localhost:5051}
+        REACT_APP_BACKEND_URL: ${REACT_APP_BACKEND_URL:-http://localhost:5051}
+        REACT_APP_FIREBASE_API_KEY: ${REACT_APP_FIREBASE_API_KEY:-}
+        REACT_APP_FIREBASE_AUTH_DOMAIN: ${REACT_APP_FIREBASE_AUTH_DOMAIN:-}
+        REACT_APP_FIREBASE_PROJECT_ID: ${REACT_APP_FIREBASE_PROJECT_ID:-}
+        REACT_APP_FIREBASE_STORAGE_BUCKET: ${REACT_APP_FIREBASE_STORAGE_BUCKET:-}
+        REACT_APP_FIREBASE_MESSAGING_SENDER_ID: ${REACT_APP_FIREBASE_MESSAGING_SENDER_ID:-}
+        REACT_APP_FIREBASE_APP_ID: ${REACT_APP_FIREBASE_APP_ID:-}
+        REACT_APP_FIREBASE_MEASUREMENT_ID: ${REACT_APP_FIREBASE_MEASUREMENT_ID:-}
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: unless-stopped

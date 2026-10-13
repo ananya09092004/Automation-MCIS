@@ -1,0 +1,157 @@
+name: CI
+
+# Regression + security-hardening CI. This workflow is READ-ONLY with
+# respect to anything outside the GitHub Actions runner: it never pushes
+# commits, opens PRs, triggers deploys, sends real emails, or touches a
+# payment provider. Every job runs only against mocked/local state.
+#
+# Nothing here drives real desktop/browser automation, a real terminal
+# against a live system, or any Nexus "live" test (anything marked
+# `@pytest.mark.live`, or that imports pyautogui/winreg/a real browser
+# profile) -- those require a real Windows/GUI machine and are out of
+# scope for a hosted Linux runner. See nexus/requirements-ci.txt and the
+# "Nexus safe tests" step below for exactly what is (and is not) run
+# here, and the security report for the full list of what still needs
+# manual/EXTERNAL validation on real hardware.
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-tests:
+    name: Backend (regression + security hardening)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcis/backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mcis/backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run regression + security hardening test suites
+        # Both suites set their own dummy GROQ/Supabase env vars and
+        # mock every external call (Supabase, Firebase, Groq, Nexus,
+        # GitHub OAuth) -- no real credentials are used or required.
+        run: npm test
+
+  nexus-tests:
+    name: Nexus (safe tests only, no live automation)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexus
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install CI-safe dependencies
+        # Deliberately NOT nexus/requirements.txt -- that file includes
+        # Windows-only packages (pywin32, pywinauto) and display/audio
+        # -dependent ones (pyautogui, PyAudio, pyttsx3, keyboard) that
+        # cannot install on a standard Linux runner. See
+        # requirements-ci.txt for why.
+        run: pip install -r requirements-ci.txt
+
+      - name: Run safe (non-live) test modules
+        # Explicitly enumerated rather than "pytest -m 'not live'" over
+        # the whole tests/ directory: a large number of other test
+        # modules in this suite import a real browser/desktop stack at
+        # module level (unrelated to this security-hardening pass) and
+        # fail to even COLLECT without a Windows machine, a real browser
+        # profile, or a display server -- none of which this runner has.
+        # That is a pre-existing test-isolation gap (tracked separately,
+        # see the P2 test-safety audit in the security report), not
+        # something this CI step can paper over. The modules below are
+        # exactly the ones that exercise this session's security fixes
+        # (api auth, approval binding, transcription trust boundary,
+        # authorization boundary, etc.) and are verified to collect and
+        # pass cleanly on a plain Linux runner.
+        run: >
+          python -m pytest -m "not live" -v
+          tests/test_accessibility_fallback_unit.py
+          tests/test_api_server.py
+          tests/test_authorization_boundary.py
+          tests/test_browser_login_session_form.py
+          tests/test_browser_page_observation.py
+          tests/test_browser_platform_executor.py
+          tests/test_browser_recovery.py
+          tests/test_browser_tabs_and_reading.py
+          tests/test_capabilities.py
+          tests/test_capability_documentation_unit.py
+          tests/test_controller_voice_bridge.py
+          tests/test_desktop_workflow_unit.py
+          tests/test_document_edit_flow.py
+          tests/test_document_io.py
+          tests/test_execution_contracts.py
+          tests/test_execution_evidence_unit.py
+          tests/test_execution_workflow.py
+          tests/test_file_explorer_workflow.py
+          tests/test_file_folder_managers_unit.py
+          tests/test_file_folder_verification_unit.py
+          tests/test_file_overwrite_protection.py
+          tests/test_file_search.py
+          tests/test_local_fast_path_close_app_authorization.py
+          tests/test_notifications_unit.py
+          tests/test_safety_acceptance_unit.py
+          tests/test_screen_state_detector_unit.py
+          tests/test_template_matcher.py
+          tests/test_terminal_timeout_unit.py
+          tests/test_transcription_trust_boundary.py
+          tests/test_voice_main_crash_recovery_unit.py
+          tests/test_windows_registry_cross_platform_unit.py
+          tests/test_workflow_recovery_report_unit.py
+
+  frontend-build:
+    name: Frontend (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcis/frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: mcis/frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build
+        # No Firebase/backend secrets are required -- CRA only bundles
+        # the code at build time, it never executes app logic (that
+        # only happens in a real browser at runtime), so this is a pure
+        # compile/bundle check.
+        run: npm run build
+
+  secret-scan:
+    name: Secret scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for committed secrets
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

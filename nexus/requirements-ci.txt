@@ -1,0 +1,37 @@
+# CI-only dependency set for nexus/tests/.
+#
+# nexus/requirements.txt is the FULL real-device dependency set: it
+# includes Windows-only packages (pywin32, pywinauto) and packages that
+# need a real display/audio device to build or run (pyautogui,
+# pygetwindow, mss, PyAudio, pyttsx3, keyboard, rapidocr-onnxruntime).
+# None of those can install on a standard Linux CI runner, and
+# `pip install -r requirements.txt` fails outright (not partially) the
+# moment it hits the first one -- so CI cannot use that file directly.
+#
+# This file is the subset actually imported by the test modules CI runs
+# (see .github/workflows/ci.yml's "Nexus safe tests" step) -- the ones
+# that collect and pass cleanly without a real desktop, browser profile,
+# or Windows registry. Tests that need those (marked `@pytest.mark.live`,
+# or anything that imports pyautogui/winreg/a real browser session) are
+# intentionally NOT run in CI; they require a real Windows/GUI
+# environment and are EXTERNAL/ENVIRONMENT VALIDATION REQUIRED, not
+# something a hosted Linux runner can validate. See the final security
+# report for the full list.
+fastapi>=0.115
+uvicorn>=0.32
+httpx>=0.27
+python-dotenv>=1.0
+pytest>=8.0
+groq>=0.11
+playwright>=1.48
+pyperclip>=1.9
+psutil>=6.0
+Pillow>=10.0
+numpy>=1.26,<2.2
+opencv-python-headless>=4.9
+python-docx>=1.1
+openpyxl>=3.1
+python-pptx>=1.0
+pdfplumber>=0.11
+SpeechRecognition>=3.10
+langdetect>=1.0.9

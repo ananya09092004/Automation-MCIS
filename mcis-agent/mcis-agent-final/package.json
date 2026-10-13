@@ -1,0 +1,33 @@
+{
+  "name": "mcis-agent",
+  "version": "4.0.0",
+  "description": "MCIS Desktop Agent - zero-setup pairing + fully local wake-word (Vosk) + Groq for actual commands",
+  "main": "agent.js",
+  "bin": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "build": "pkg . --targets node18-win-x64 --out-path dist"
+  },
+  "dependencies": {
+    "node-notifier": "^10.0.1",
+    "say": "^0.16.0",
+    "vosk-koffi": "^1.1.1",
+    "ws": "^8.17.0"
+  },
+  "devDependencies": {
+    "pkg": "^5.8.1"
+  },
+  "pkg": {
+    "assets": [
+      "commands/*.js",
+      "voice/*.js",
+      "model/**/*",
+      "bin/sox/**/*",
+      "node_modules/node-notifier/vendor/**/*",
+      "node_modules/koffi/build/**/*"
+    ],
+    "targets": [
+      "node18-win-x64"
+    ]
+  }
+}

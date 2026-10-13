@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Nexus Safe Browser Demo</title>
+<style>dialog{border:1px solid #777}.loading{display:none}table{border-collapse:collapse}td,th{border:1px solid #999;padding:4px}</style></head>
+<body><h1>Nexus Safe Browser Demo</h1><p id="session-status">Not logged in</p>
+<section aria-label="Research options"><h2>Headphone research</h2><table id="options"><thead><tr><th>Model</th><th>Price</th><th>Rating</th></tr></thead><tbody><tr><td>Nova Lite</td><td>2000</td><td>4.1</td></tr><tr><td>Nova Pro</td><td>4000</td><td>4.7</td></tr></tbody></table><button type="button" id="next-page">Next</button></section>
+<section aria-label="Safe form"><h2>Form</h2><form id="profile-form"><label>Name <input id="full-name" name="name"></label><label>Email <input id="email" name="email"></label><button type="submit">Submit demo form</button></form><p id="form-status">Form has not been submitted</p></section>
+<section aria-label="File actions"><h2>Files</h2><label>Upload <input id="upload" type="file"></label><a id="download" href="sample-download.txt" download>Download sample</a></section>
+<section aria-label="Approved local login"><h2>Demo login</h2><form id="login-form"><label>Username <input id="username"></label><label>Password <input id="password" type="password"></label><button type="submit">Log in</button></form></section>
+<button type="button" id="show-loading">Show loading</button><p class="loading" aria-busy="true">Loading data</p><dialog id="demo-popup"><p>Safe test popup</p><button type="button" id="close-popup">Close</button></dialog>
+<script>
+const status=document.querySelector('#session-status'),user=localStorage.getItem('demoUser');if(user)status.textContent=`Logged in as ${user}`;
+document.querySelector('#next-page').onclick=()=>document.querySelector('#options tbody').innerHTML='<tr><td>Nova Max</td><td>6000</td><td>4.9</td></tr>';
+document.querySelector('#login-form').onsubmit=e=>{e.preventDefault();const name=document.querySelector('#username').value;localStorage.setItem('demoUser',name);status.textContent=`Logged in as ${name}`};
+document.querySelector('#profile-form').onsubmit=e=>{e.preventDefault();document.querySelector('#form-status').textContent='Demo form submitted'};
+document.querySelector('#show-loading').onclick=()=>{const l=document.querySelector('.loading');l.style.display='block';setTimeout(()=>l.style.display='none',500)};
+document.querySelector('#close-popup').onclick=()=>document.querySelector('#demo-popup').close();document.querySelector('#demo-popup').showModal();
+</script></body></html>

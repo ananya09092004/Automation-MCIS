@@ -1,0 +1,9 @@
+{
+  "name": "@nexus/automation-sdk",
+  "version": "1.0.0",
+  "description": "Minimal client for the Nexus Automation API (/api/automation/v1) and webhook signature verification.",
+  "main": "index.js",
+  "license": "ISC",
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node test.js" }
+}

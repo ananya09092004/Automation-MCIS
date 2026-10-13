@@ -1,0 +1,135 @@
+if (process.pkg) {
+  const koffi = require('koffi');
+  const path = require('path');
+  const originalLoad = koffi.load;
+  koffi.load = function (dllPath, ...rest) {
+    let realPath = dllPath;
+    if (typeof dllPath === 'string' && /libvosk\.(dll|dylib|so)$/i.test(dllPath)) {
+      const distDir = path.dirname(process.execPath);
+      realPath = path.join(distDir, 'bin-win32-x64', 'libvosk.dll');
+    }
+    return originalLoad.call(koffi, realPath, ...rest);
+  };
+}
+
+const WebSocket = require('ws');
+const notifier = require('node-notifier');
+const { loadOrPair } = require('./pairing');
+const { startVoice } = require('./voice');
+const { setupMuteToggle } = require('./voice/muteControl');
+const appControl = require('./commands/appControl');
+const fileControl = require('./commands/fileControl');
+const folderControl = require('./commands/folderControl');
+const terminalControl = require('./commands/terminalControl');
+const vscodeControl = require('./commands/vscodeControl');
+const settingsControl = require('./commands/settingsControl');
+const downloadsOrganizer = require('./commands/downloadsOrganizer');
+
+let ws;
+let config;
+let voiceStarted = false;
+
+const COMMAND_HANDLERS = {
+  openApp: (payload) => appControl.openApp(payload.appName),
+  closeApp: (payload) => appControl.closeApp(payload.appName),
+  searchFile: (payload) => fileControl.searchFile(payload.fileName, payload.searchDir),
+  openFile: (payload) => fileControl.openFile(payload.filePath),
+  createFolder: (payload) => folderControl.createFolder(payload.folderPath),
+  renameFolder: (payload) => folderControl.renameFolder(payload.oldPath, payload.newPath),
+  deleteFolder: (payload) => folderControl.deleteFolder(payload.folderPath),
+  moveFolder: (payload) => folderControl.moveFolder(payload.sourcePath, payload.destPath),
+  runCommand: (payload) => terminalControl.runCommand(payload.command, payload.cwd),
+  openInVSCode: (payload) => vscodeControl.openInVSCode(payload.targetPath),
+  runFileInTerminal: (payload) => vscodeControl.runFileInTerminal(payload.filePath, payload.runner),
+  setVolume: (payload) => settingsControl.setVolume(payload.level),
+  installSoftware: (payload) => settingsControl.installSoftware(payload.packageName),
+  organizeDownloads: (payload) => downloadsOrganizer.organizeDownloads(payload.downloadsPath)
+};
+
+function connect() {
+  ws = new WebSocket(config.BACKEND_WS_URL, {
+    headers: { 'x-device-id': config.DEVICE_ID, 'x-auth-token': config.AUTH_TOKEN }
+  });
+
+  ws.on('open', () => {
+    console.log(`[MCIS Agent] Connected as ${config.DEVICE_ID}`);
+    // Nexus (nexus/voice, Python) is the canonical voice pipeline -- it
+    // owns the microphone, wake word ("Hey Nexus"), STT, hallucination
+    // filtering, endpointing, and TTS. This agent's own voice/ module
+    // (localWake.js + continuousListen.js) is a SEPARATE wake-word +
+    // mic-capture loop that, if started, runs at the same time as
+    // Nexus and fights it for the same Windows mic device -- this was
+    // firing on every launch, which is a direct cause of duplicate/
+    // flaky-sounding voice behavior (two processes both listening for
+    // "Hey Nexus", both able to dispatch a command for the same thing
+    // said once).
+    //
+    // This agent's job is the WebSocket command-execution channel above
+    // (COMMAND_HANDLERS) -- that stays on unconditionally. Its own
+    // voice capture is now opt-in only, for setups that deliberately
+    // don't run the Python Nexus voice pipeline and want this agent's
+    // lighter-weight local-wake path instead.
+    const ownVoiceEnabled = process.env.MCIS_AGENT_OWN_VOICE === 'true';
+    if (ownVoiceEnabled && !voiceStarted) {
+      voiceStarted = true;
+      console.log('[MCIS Agent] MCIS_AGENT_OWN_VOICE=true -- starting this agent\'s own voice/mic capture.');
+      startVoice({
+        BACKEND_HTTP_URL: config.BACKEND_WS_URL.replace(/^ws/, 'http').replace(/\/agent$/, ''),
+        DEVICE_ID: config.DEVICE_ID,
+        AUTH_TOKEN: config.AUTH_TOKEN
+      });
+    }
+  });
+
+  ws.on('message', async (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (msg.type !== 'command') return;
+
+    const handler = COMMAND_HANDLERS[msg.action];
+    if (!handler) return sendResult(msg.commandId, { success: false, error: 'Unknown command' });
+
+    try {
+      const result = await handler(msg.payload || {});
+      sendResult(msg.commandId, result);
+    } catch (err) {
+      sendResult(msg.commandId, err);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log('[MCIS Agent] Disconnected, retrying in 5s...');
+    setTimeout(connect, config.RECONNECT_INTERVAL_MS);
+  });
+
+  ws.on('error', (err) => console.error('[MCIS Agent] Error:', err.message));
+}
+
+function sendResult(commandId, result) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'result', commandId, result }));
+  }
+}
+
+async function main() {
+  setupMuteToggle();
+  config = await loadOrPair();
+  connect();
+
+  notifier.notify({
+    title: 'MCIS Agent',
+    message: "Running in background. Say 'Hey Nexus' for voice commands. Explore MCIS: your-mcis-site.com",
+    sound: false,
+    wait: false
+  });
+}
+
+process.on('uncaughtException', (err) => {
+  console.error('[MCIS Agent] FATAL uncaughtException:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('[MCIS Agent] FATAL unhandledRejection:', err);
+});
+
+main();

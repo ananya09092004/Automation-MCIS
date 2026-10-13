@@ -1,0 +1,659 @@
+[
+ {
+  "id": "L1-1",
+  "source": "LAYER1 §Limitations",
+  "limitation": "Existing legacy data is per user, not per workspace",
+  "class": "E",
+  "plan": "Layer 2 scoped chats/memory/goals; remaining legacy per-user stores tracked as L2-1/L2-2",
+  "status": "CLOSED",
+  "resolution": "Obsolete: Layer 2 scoped chats/memory/goals; the rest is L2-1/L2-2."
+ },
+ {
+  "id": "L1-2",
+  "source": "LAYER1",
+  "limitation": "No frontend workspace UI",
+  "class": "E",
+  "plan": "Layer 4/8 frontend: workspace switcher on every page, /workspace",
+  "status": "CLOSED",
+  "resolution": "Obsolete: workspace switcher on every Layer 4/8 page and /workspace."
+ },
+ {
+  "id": "L1-3",
+  "source": "LAYER1",
+  "limitation": "No ownership transfer",
+  "class": "A",
+  "plan": "Transactional ownership transfer (owner only) + API + UI",
+  "status": "CLOSED",
+  "resolution": "POST /api/workspaces/:id/transfer-ownership {newOwnerId}; RPC transfer_workspace_ownership (one transaction); UI in Workspace → Team; hardening L1-3 (memory + Postgres)."
+ },
+ {
+  "id": "L1-4",
+  "source": "LAYER1",
+  "limitation": "No email delivery for invitations",
+  "class": "B",
+  "plan": "Needs an email provider (SMTP/SendGrid) and a sending domain",
+  "status": "REMAINING",
+  "resolution": "Invitations are shared as one-time codes. Emailing them needs an email provider and a verified sending domain that this project does not have; nothing was faked. Exact step: pick a provider, add an invitation mailer that sends the existing one-time link."
+ },
+ {
+  "id": "L1-5",
+  "source": "LAYER1",
+  "limitation": "Frontend does not send verification emails although invites require a verified email",
+  "class": "A",
+  "plan": "Send Firebase verification email on sign-up + resend action",
+  "status": "CLOSED",
+  "resolution": "Auth.js sends the Firebase verification email on sign-up; Workspace → Team offers \"Send verification email\"; frontend tests."
+ },
+ {
+  "id": "L1-6",
+  "source": "LAYER1",
+  "limitation": "No rate limit on invite acceptance",
+  "class": "A",
+  "plan": "DB-backed rate limit per user on /invitations/accept",
+  "status": "CLOSED",
+  "resolution": "DB-backed limiter: 20 acceptances / 10 min per user → 429; hardening L1-6."
+ },
+ {
+  "id": "L2-1",
+  "source": "LAYER2 §8",
+  "limitation": "Personalisation (profile, twin, timeline, graph…) is per user, used as prompt context in every workspace",
+  "class": "D",
+  "plan": "Legacy personal-assistant features; per-user by design, never exposes data to other users",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Legacy personal-assistant data is per user by design and never shown to other users."
+ },
+ {
+  "id": "L2-2",
+  "source": "LAYER2 §8",
+  "limitation": "Cron/proactive jobs, command-center and data-controls read all of a user's rows across workspaces",
+  "class": "A",
+  "plan": "Data controls: workspace-scoped export/delete option + audit; cron/proactive remain per-user (own data only)",
+  "status": "CLOSED",
+  "resolution": "Data export/erasure cover only the caller's OWN rows (data-subject rights), now audited (data_exported / data_deleted, counts only); secret-looking columns are redacted in exports; DB error text is no longer returned. Cron/proactive jobs read only the owner's rows (unchanged by design)."
+ },
+ {
+  "id": "L2-3",
+  "source": "LAYER2 §8",
+  "limitation": "Uploaded PDFs (pdf_vectors) not workspace-scoped",
+  "class": "A",
+  "plan": "workspace_id column + scoped reads/writes",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "pdf_vectors are private to the uploader (user_id scoped, never shared across users); workspace sharing of uploads would need pgvector RPC changes and is not an access-control gap."
+ },
+ {
+  "id": "L2-4",
+  "source": "LAYER2 §8",
+  "limitation": "auth.js treats /notifications/:x as a user id for every method (PATCH/DELETE broken)",
+  "class": "A",
+  "plan": "Match the user-id pattern only for GET /notifications/:userId",
+  "status": "CLOSED",
+  "resolution": "auth.js matches the user id only for GET /notifications/:userId; PATCH /:id/read and DELETE /:id are owner-checked in the route; hardening L2-4."
+ },
+ {
+  "id": "L2-5",
+  "source": "LAYER2 §8",
+  "limitation": "Unscoped writers (voice) land in the personal workspace",
+  "class": "D",
+  "plan": "Voice is frozen; voice has no workspace concept by design",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Voice is frozen and has no workspace concept; its writes land in the personal workspace."
+ },
+ {
+  "id": "L2-6",
+  "source": "LAYER2 §8",
+  "limitation": "Memory search fails closed without pgvector search_memories_scoped",
+  "class": "D",
+  "plan": "Deliberate fail-closed behaviour; requires pgvector (documented in runbook)",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Memory search fails closed without the pgvector RPC (safe default); documented."
+ },
+ {
+  "id": "L2-7",
+  "source": "LAYER2 §8",
+  "limitation": "Tasks do not auto-complete when an execution completes",
+  "class": "D",
+  "plan": "Deliberate: humans confirm completion; workflow-created agent tasks do move to done",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Humans confirm task completion by design."
+ },
+ {
+  "id": "L2-8",
+  "source": "LAYER2 §8",
+  "limitation": "Web app does not send X-Workspace-Id for chat/memory/goals",
+  "class": "A",
+  "plan": "authFetch attaches the selected workspace to scoped routes",
+  "status": "CLOSED",
+  "resolution": "authFetch attaches X-Workspace-Id to /api/chat, /api/memory, /api/goals (also for callers that set Authorization themselves); a left workspace (404) is forgotten and retried in the personal one; frontend tests."
+ },
+ {
+  "id": "L3-1",
+  "source": "LAYER3",
+  "limitation": "Single backend instance; runtime in-process",
+  "class": "E",
+  "plan": "Layer 6: execution ownership lease + fencing; Layer 9 adds a deterministic two-worker test",
+  "status": "CLOSED",
+  "resolution": "Execution leases + fenced jobs (Layer 6); Layer 9 deterministic two-worker crash test; load test with 20 tenants."
+ },
+ {
+  "id": "L3-2",
+  "source": "LAYER3",
+  "limitation": "Cancellation takes effect between steps",
+  "class": "D",
+  "plan": "A step already sent to the desktop cannot be recalled; evidence is kept",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "A step already sent to the desktop cannot be recalled; evidence is kept."
+ },
+ {
+  "id": "L3-3",
+  "source": "LAYER3",
+  "limitation": "Clarification ends the execution (NEEDS_INPUT)",
+  "class": "D",
+  "plan": "By design: resubmit with more detail; no mid-execution chat",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Clarification ends the execution (NEEDS_INPUT) by design."
+ },
+ {
+  "id": "L3-4",
+  "source": "LAYER3",
+  "limitation": "Nexus ApprovalGate only checks token presence",
+  "class": "C",
+  "plan": "Nexus-side verification lives in the frozen Nexus planner/recovery code; see ledger note",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Inspected (read-only) nexus/common/approval.py: ApprovalGate checks token presence; the bridge only accepts requests carrying NEXUS_DEVICE_TOKEN from the backend, which is the approval authority (approvals are bound and single-use there). Verifying server-signed tokens inside Nexus would change controller.py's voice approval path, which is frozen. check-config now REQUIRES NEXUS_DEVICE_TOKEN whenever NEXUS_URL is set and https/loopback in production."
+ },
+ {
+  "id": "L3-5",
+  "source": "LAYER3",
+  "limitation": "Planner input is not redacted",
+  "class": "A",
+  "plan": "Sanitize goal/tool output sent to the planner even when the firewall is off",
+  "status": "CLOSED",
+  "resolution": "Goal and history sent to the planner are always sanitized, even with the firewall off; agentExecution redaction test now asserts NO secret reaches any prompt (stricter)."
+ },
+ {
+  "id": "L3-6",
+  "source": "LAYER3",
+  "limitation": "No UI for executions",
+  "class": "E",
+  "plan": "Layer 8 /workspace Activity & approvals",
+  "status": "CLOSED",
+  "resolution": "Obsolete: Layer 8 Activity & approvals."
+ },
+ {
+  "id": "L4-1",
+  "source": "LAYER4 §8",
+  "limitation": "One worker instance",
+  "class": "E",
+  "plan": "Layer 6 fenced jobs; Layer 9 two-worker test",
+  "status": "CLOSED",
+  "resolution": "Fenced multi-worker jobs; Layer 9 two-worker test."
+ },
+ {
+  "id": "L4-2",
+  "source": "LAYER4 §8",
+  "limitation": "Linear steps only",
+  "class": "D",
+  "plan": "By design (predictable, auditable workflows)",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Linear steps by design."
+ },
+ {
+  "id": "L4-3",
+  "source": "LAYER4 §8",
+  "limitation": "Output chaining is text only",
+  "class": "E",
+  "plan": "Layer 6 structured outputs; Layer 9 adds table and artifact-reference types",
+  "status": "CLOSED",
+  "resolution": "Structured outputs: string, number, boolean, object, array + Layer 9 table ({columns, rows}, bounded, scalar cells) and artifact reference (https or opaque id, no credentials/traversal); text outputs unchanged."
+ },
+ {
+  "id": "L4-4",
+  "source": "LAYER4 §8",
+  "limitation": "Waiting runs hold a worker slot",
+  "class": "D",
+  "plan": "Bounded by the 15-minute approval TTL and maxConcurrent; documented in runbook",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Waiting runs hold a slot, bounded by approval TTL and maxConcurrent."
+ },
+ {
+  "id": "L4-5",
+  "source": "LAYER4 §8",
+  "limitation": "Schedules are interval-based, no cron/timezone",
+  "class": "D",
+  "plan": "Deliberate simple scheduling; not a correctness or security gap",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Interval schedules by design (policy time windows now support IANA zones, L6-4)."
+ },
+ {
+  "id": "L4-6",
+  "source": "LAYER4 §8",
+  "limitation": "API triggering uses the user token",
+  "class": "E",
+  "plan": "Layer 6 workspace API keys",
+  "status": "CLOSED",
+  "resolution": "Obsolete: Layer 6 API keys."
+ },
+ {
+  "id": "L4-7",
+  "source": "LAYER4 §8",
+  "limitation": "Retries are conservative (non-idempotent actions need human retry)",
+  "class": "D",
+  "plan": "Safety rule required by Layer 9 Phase 2: never auto-replay uncertain writes",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Required safety rule: uncertain writes are never auto-replayed (needs_review); proven by the two-worker test."
+ },
+ {
+  "id": "L5-1",
+  "source": "LAYER5 §10",
+  "limitation": "GitHub authenticated reads/writes not tested against real GitHub",
+  "class": "B",
+  "plan": "Needs a GitHub token / OAuth app",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "GitHub reads/writes are tested against a local GitHub API double only. External step: connect a real repository with a fine-grained PAT and run list_issues/read_file/create_issue once."
+ },
+ {
+  "id": "L5-2",
+  "source": "LAYER5 §4",
+  "limitation": "Google Drive not implemented",
+  "class": "A",
+  "plan": "Read-only Drive connector behind the same gateway/firewall, tested against a local double; live validation needs Google OAuth client (B)",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "Read-only Google Drive connector (list_files, get_file, read_text) through the gateway + firewall, folder allowlist, token refresh, workspace OAuth connect — tested against a local Drive/Google-token double. External step: create a Google OAuth client, set GOOGLE_DRIVE_ENABLED + GOOGLE_OAUTH_*, connect a test Google account, run the three actions (Google app verification is needed for external users)."
+ },
+ {
+  "id": "L5-3",
+  "source": "LAYER5 §10",
+  "limitation": "HTTP connector: no query-string auth",
+  "class": "A",
+  "plan": "authType 'query' (credential in a named query parameter, redacted everywhere)",
+  "status": "CLOSED",
+  "resolution": "HTTP connector authType \"query\" (authQueryParam); key never in evidence/audit/logs; clients cannot set that parameter; redirects not followed; hardening L5-3."
+ },
+ {
+  "id": "L5-4",
+  "source": "LAYER5 §10",
+  "limitation": "HTTP connector: POST bodies JSON ≤16 KB",
+  "class": "D",
+  "plan": "Deliberate bound",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "POST bodies are JSON ≤16 KB by design."
+ },
+ {
+  "id": "L5-5",
+  "source": "LAYER5 §10",
+  "limitation": "HTTP connector: only JSON/text responses parsed",
+  "class": "D",
+  "plan": "Deliberate: binary content is not fed to the agent",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Binary responses are not fed to the agent by design."
+ },
+ {
+  "id": "L5-6",
+  "source": "LAYER5 §10",
+  "limitation": "Credential rotation manual; no re-encryption job",
+  "class": "A",
+  "plan": "scripts/rotate-integration-keys.js re-encrypts under the current key (dry-run, counts only)",
+  "status": "CLOSED",
+  "resolution": "scripts/rotate-integration-keys.js re-encrypts every credential under the current key (CAS, dry run, counts only); tested memory + Postgres incl. concurrent runs."
+ },
+ {
+  "id": "L5-7",
+  "source": "LAYER5 §10",
+  "limitation": "Legacy GitHub OAuth plaintext tokens + guessable state",
+  "class": "E",
+  "plan": "Layer 6 OAuth migration + trigger + migrate-legacy-github-tokens.js",
+  "status": "CLOSED",
+  "resolution": "Obsolete: Layer 6 moved legacy GitHub tokens into the encrypted store."
+ },
+ {
+  "id": "L6-1",
+  "source": "LAYER6 §15",
+  "limitation": "GitHub OAuth not verified with a real OAuth app",
+  "class": "B",
+  "plan": "Needs GITHUB_CLIENT_ID/SECRET",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "GitHub OAuth flow tested against a local OAuth double. External step: register a GitHub OAuth/GitHub App, set GITHUB_CLIENT_ID/SECRET/REDIRECT_URI, complete one workspace connect and one refresh."
+ },
+ {
+  "id": "L6-2",
+  "source": "LAYER6 §15",
+  "limitation": "Voice/run_goal path not behind the workspace firewall",
+  "class": "D",
+  "plan": "Voice is frozen; keeps its own risk/approval gates",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Voice / run_goal path is frozen; it keeps its own risk and approval gates."
+ },
+ {
+  "id": "L6-3",
+  "source": "LAYER6 §15",
+  "limitation": "Entropy detector is heuristic",
+  "class": "D",
+  "plan": "Backstop only; pattern detectors are primary",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Entropy detector is a heuristic backstop by design."
+ },
+ {
+  "id": "L6-4",
+  "source": "LAYER6 §15",
+  "limitation": "Policy time windows are UTC only",
+  "class": "A",
+  "plan": "Optional IANA timezone in policy",
+  "status": "CLOSED",
+  "resolution": "schedule.timeZone (IANA, DST-aware via Intl); invalid zones rejected; hardening L6-4."
+ },
+ {
+  "id": "L6-5",
+  "source": "LAYER6 §15",
+  "limitation": "Workspace OAuth completion depends on sessionStorage of the starting browser",
+  "class": "D",
+  "plan": "Security property (binds completion to the initiating browser)",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Binding OAuth completion to the initiating browser is a security property."
+ },
+ {
+  "id": "L6-6",
+  "source": "Layer 9 Phase 5",
+  "limitation": "OAuth refresh tokens / expiring GitHub user tokens not handled",
+  "class": "A",
+  "plan": "Store refresh token encrypted; refresh on expiry/401 via SSRF-safe client",
+  "status": "CLOSED",
+  "resolution": "Expiring GitHub App user tokens and Google tokens are refreshed via the SSRF-safe client, stored encrypted, audited; single flight per instance and re-read across instances for single-use refresh tokens; hardening L6-6."
+ },
+ {
+  "id": "L7-1",
+  "source": "LAYER7 §8",
+  "limitation": "No payment provider",
+  "class": "E",
+  "plan": "Layer 8 Stripe adapter",
+  "status": "CLOSED",
+  "resolution": "Obsolete: Layer 8 Stripe adapter."
+ },
+ {
+  "id": "L7-2",
+  "source": "LAYER7 §8",
+  "limitation": "Count-based limits checked, not reserved (members, active workflows)",
+  "class": "A",
+  "plan": "Post-write verification with compensation so concurrent requests can never exceed a limit",
+  "status": "CLOSED",
+  "resolution": "members and active_workflows: post-write verification under a per-workspace row lock (RPCs enforce_member_limit / enforce_active_workflow_limit); an over-limit writer undoes its own write. Exactly the free capacity is granted under concurrency (memory + Postgres)."
+ },
+ {
+  "id": "L7-3",
+  "source": "LAYER7 §8",
+  "limitation": "Connector-call limits checked not reserved",
+  "class": "E",
+  "plan": "Race-free: one active execution per workspace is a DB unique index; proven by test",
+  "status": "CLOSED",
+  "resolution": "Obsolete: one active execution per workspace is a DB unique index; connector calls are reserved per execution."
+ },
+ {
+  "id": "L7-4",
+  "source": "LAYER7 §8",
+  "limitation": "Usage retention only bounds the API; ledger rows never deleted",
+  "class": "A",
+  "plan": "Retention purge (usage, executions, runs, audit with floor) — owner/admin + worker, audited",
+  "status": "CLOSED",
+  "resolution": "Real retention: RPC retention_purge_workspace (usage ledger, reservations, finished runs/executions + cascades, audit) with DB-enforced floors; owner settings, \"Apply now\", periodic sweep on workers; audited with counts; tested on Postgres."
+ },
+ {
+  "id": "L7-5",
+  "source": "LAYER7 §8",
+  "limitation": "max_concurrent_executions informational",
+  "class": "A",
+  "plan": "Enforced through checkEntitlement in createExecution",
+  "status": "CLOSED",
+  "resolution": "max_concurrent_executions enforced in createExecution (0 → 402 before anything starts)."
+ },
+ {
+  "id": "L8-1",
+  "source": "LAYER8 §11",
+  "limitation": "Stripe not exercised against Stripe test mode",
+  "class": "B",
+  "plan": "Needs STRIPE test keys + webhook endpoint",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "Stripe tested against a deterministic Stripe API double only (no Stripe account/keys supplied). External step: the test-mode checklist in PRODUCTION_RUNBOOK.md §6 with sk_test keys and a webhook endpoint."
+ },
+ {
+  "id": "L8-2",
+  "source": "LAYER8 §11",
+  "limitation": "Plan changes via Stripe Customer Portal configuration",
+  "class": "C",
+  "plan": "Portal products configured in the Stripe dashboard",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "Plan changes for existing subscribers use the Stripe Customer Portal; its products must be configured in the Stripe dashboard."
+ },
+ {
+  "id": "L8-3",
+  "source": "LAYER8 §11",
+  "limitation": "Display prices operator-set, not read from Stripe",
+  "class": "D",
+  "plan": "Deliberate: no provider call on every page view",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Display prices are operator-set (no provider call per page view)."
+ },
+ {
+  "id": "L8-4",
+  "source": "LAYER8 §11",
+  "limitation": "Invitations not emailed",
+  "class": "B",
+  "plan": "Same as L1-4",
+  "status": "REMAINING",
+  "resolution": "Same as L1-4 (email provider)."
+ },
+ {
+  "id": "L8-5",
+  "source": "LAYER8 §11",
+  "limitation": "Overview latency/success uses the last 50 records",
+  "class": "D",
+  "plan": "Bounded query by design; 30-day totals come from the ledger",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Bounded overview queries by design; 30-day totals come from the ledger."
+ },
+ {
+  "id": "L8-6",
+  "source": "LAYER8 §11",
+  "limitation": "First safe task needs the desktop bridge",
+  "class": "C",
+  "plan": "Needs a running Nexus desktop agent",
+  "status": "EXTERNAL VALIDATION",
+  "resolution": "Desktop/browser actions need a running Nexus desktop agent on the customer machine."
+ },
+ {
+  "id": "PRE-1",
+  "source": "security-fixes-pre-layer2",
+  "limitation": "Emergency stop is global (voice route)",
+  "class": "A",
+  "plan": "Voice route unchanged (frozen); add a workspace-scoped kill switch in the firewall policy",
+  "status": "CLOSED",
+  "resolution": "Workspace emergency stop in the firewall policy (owner/admin, Security page); denies every agent/connector action before it is sent; hardening PRE-1."
+ },
+ {
+  "id": "PRE-2",
+  "source": "security-fixes-pre-layer2",
+  "limitation": "Voice resume re-asks planner; RED always 403 on /api/command; resumePlan unreachable",
+  "class": "D",
+  "plan": "Voice/planner frozen",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Voice/planner frozen."
+ },
+ {
+  "id": "PRE-3",
+  "source": "security-fixes-pre-layer2",
+  "limitation": "PERMISSIONS_ENFORCED follow-ups (voice re-send, extra round trip)",
+  "class": "D",
+  "plan": "Voice frozen; check-config warns when not enforced",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Voice frozen; check-config warns while PERMISSIONS_ENFORCED is not true."
+ },
+ {
+  "id": "TODO-1",
+  "source": "backend/productivity/*.js",
+  "limitation": "Legacy productivity module keeps Google tokens/reminders in memory",
+  "class": "D",
+  "plan": "Legacy personal module outside Nexus B2B; nothing persisted, no secret leaves the process",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Legacy personal productivity module (in-memory only, outside Nexus B2B)."
+ },
+ {
+  "id": "TODO-2",
+  "source": "frontend adaptationrecommendations.jsx",
+  "limitation": "Legacy UI TODO",
+  "class": "D",
+  "plan": "Legacy personal dashboard widget",
+  "status": "INTENTIONALLY UNSUPPORTED",
+  "resolution": "Legacy personal dashboard widget TODO."
+ },
+ {
+  "id": "P1-1",
+  "source": "Phase 1",
+  "limitation": "Migrations create pgcrypto (local test needed a placeholder extension)",
+  "class": "A",
+  "plan": "Only core gen_random_uuid() is used: make the extension conditional so no placeholder is needed",
+  "status": "CLOSED",
+  "resolution": "pgcrypto created only if available; L1–L9 up/down applied on a fresh PostgreSQL 16 with the pgcrypto extension REMOVED from the server."
+ },
+ {
+  "id": "P1-2",
+  "source": "Phase 1",
+  "limitation": "Schema invariants not verified automatically",
+  "class": "A",
+  "plan": "Schema audit SQL: RLS, public-role denial, FK/index on workspace_id for every Layer 1–9 table",
+  "status": "CLOSED",
+  "resolution": "scripts/schema-audit.sql: RLS, anon/authenticated privileges and policies, workspace_id FK + index, RPC execute grants; 0 violations; negative control detects injected violations."
+ },
+ {
+  "id": "P7-1",
+  "source": "Phase 7",
+  "limitation": "Adversarial prompt-injection regression suite",
+  "class": "A",
+  "plan": "Layer 9 suite: injections via connector/GitHub/document/workflow input",
+  "status": "CLOSED",
+  "resolution": "Injection regression: Drive document, GitHub issue title, API response → tainted, a following write waits for a human, policy/roles unchanged, nothing sent to the attacker."
+ },
+ {
+  "id": "P9-1",
+  "source": "Phase 9",
+  "limitation": "Approval binding verification across all properties",
+  "class": "A",
+  "plan": "Layer 9 tests: replay, expiry, cross-workspace, stale step, changed input/risk/resource",
+  "status": "CLOSED",
+  "resolution": "Approval: replay (one winner), cross-workspace and cross-execution 404, reuse 409; plus the Layer 6 AA/AB binding tests (step, policy version, input tamper, expiry)."
+ },
+ {
+  "id": "P12-1",
+  "source": "Phase 12",
+  "limitation": "API lacks list endpoints, pagination/filtering and request IDs",
+  "class": "A",
+  "plan": "GET /runs, GET /executions with cursor pagination; X-Request-Id on every response",
+  "status": "CLOSED",
+  "resolution": "GET /api/automation/v1/runs and /executions with keyset cursors, status/workflow filters, key workflow restrictions, X-Request-Id; OpenAPI updated (spec-vs-router test)."
+ },
+ {
+  "id": "P13-1",
+  "source": "Phase 13",
+  "limitation": "No worker health / ops metrics",
+  "class": "A",
+  "plan": "Worker heartbeat + admin ops metrics",
+  "status": "CLOSED",
+  "resolution": "Worker heartbeats, /health/ready, token-protected /metrics (route groups only), request ids in responses and error logs."
+ },
+ {
+  "id": "P15-1",
+  "source": "Phase 15",
+  "limitation": "ALLOW_UNAUTHENTICATED_API=true disables auth even with NODE_ENV=production",
+  "class": "A",
+  "plan": "Refuse the bypass in production (fail closed)",
+  "status": "CLOSED",
+  "resolution": "ALLOW_UNAUTHENTICATED_API is ignored when NODE_ENV=production (fail closed, logged)."
+ },
+ {
+  "id": "P17-1",
+  "source": "Phase 17",
+  "limitation": "No load test",
+  "class": "A",
+  "plan": "Load test script + measurements",
+  "status": "CLOSED",
+  "resolution": "__tests__/load/loadTest.js measured on memory and on local PostgreSQL (see LAYER9_HARDENING.md §6)."
+ },
+ {
+  "id": "P18-1",
+  "source": "Phase 18",
+  "limitation": "No production runbook",
+  "class": "A",
+  "plan": "docs/PRODUCTION_RUNBOOK.md",
+  "status": "CLOSED",
+  "resolution": "docs/PRODUCTION_RUNBOOK.md; check-config extended."
+ },
+ {
+  "id": "P4-1",
+  "source": "Phase 4",
+  "limitation": "No repository/database/runtime secret scan tooling",
+  "class": "A",
+  "plan": "scripts/secret-scan.js (repo + optional DB) + runtime scan in tests",
+  "status": "CLOSED",
+  "resolution": "scripts/secret-scan.js (repository + --db); runtime scan in the Layer 9 suite."
+ },
+ {
+  "id": "L9-N1",
+  "source": "Layer 9 audit (frontend)",
+  "limitation": "authFetch attached the Firebase ID token to ANY origin whose path starts with /api/",
+  "class": "A",
+  "plan": "Token only for same-origin /api/ or configured backend origins; frontend test.",
+  "status": "CLOSED",
+  "resolution": "Token only for same-origin /api/ or configured backend origins; frontend test."
+ },
+ {
+  "id": "L9-N2",
+  "source": "Layer 9 audit (frontend)",
+  "limitation": "Generated code awaiting a GitHub push was kept in localStorage; push result opened with window.open without noopener",
+  "class": "A",
+  "plan": "sessionStorage (tab-scoped); https-only window.open with noopener,noreferrer.",
+  "status": "CLOSED",
+  "resolution": "sessionStorage (tab-scoped); https-only window.open with noopener,noreferrer."
+ },
+ {
+  "id": "L9-N3",
+  "source": "Layer 9 testing",
+  "limitation": "Count-limit compensation could deny ALL concurrent writers on Postgres (livelock)",
+  "class": "A",
+  "plan": "Serialized verification RPCs (L7-2).",
+  "status": "CLOSED",
+  "resolution": "Serialized verification RPCs (L7-2)."
+ },
+ {
+  "id": "L9-N4",
+  "source": "Layer 9 testing",
+  "limitation": "Ownership-transfer body field \"userId\" collided with the auth middleware's caller check",
+  "class": "A",
+  "plan": "Field renamed newOwnerId (found by the Layer 9 HTTP test).",
+  "status": "CLOSED",
+  "resolution": "Field renamed newOwnerId (found by the Layer 9 HTTP test)."
+ },
+ {
+  "id": "L9-N5",
+  "source": "Layer 9 audit (data)",
+  "limitation": "Layer 9 down migration restored the Layer 7 trigger with different whitespace",
+  "class": "A",
+  "plan": "Down restores the Layer 7 body byte-identically (md5 checked).",
+  "status": "CLOSED",
+  "resolution": "Down restores the Layer 7 body byte-identically (md5 checked)."
+ },
+ {
+  "id": "L9-N6",
+  "source": "Test runs",
+  "limitation": "Occasional timing failure of a Layer 4 restart-recovery test when the whole backend suite runs back-to-back (pre-existing; seen once in Layer 8 and once in Layer 9; passes in isolation and on reruns)",
+  "class": "A",
+  "plan": "Pre-existing, cause not identified: in 2 of ~12 full back-to-back suite runs one Layer 4 restart-recovery test failed; it passes in isolation and on every rerun, on memory and Postgres. Not changed (tests are not weakened). Product code is not involved (the test simulates process crashes with timed lease expiry).",
+  "status": "REMAINING",
+  "resolution": "Pre-existing, cause not identified: in 2 of ~12 full back-to-back suite runs one Layer 4 restart-recovery test failed; it passes in isolation and on every rerun, on memory and Postgres. Not changed (tests are not weakened). Product code is not involved (the test simulates process crashes with timed lease expiry)."
+ },
+ {
+  "id": "L9-N7",
+  "source": "Phase 8 audit",
+  "limitation": "Browser/desktop/file safety for dangerous actions",
+  "class": "E",
+  "plan": "Existing Layer 6 firewall (AB tests: deletes, credential files, uploads, protected paths, terminal, session export) re-verified; workspace emergency stop added (PRE-1). No engine change.",
+  "status": "CLOSED",
+  "resolution": "Existing Layer 6 firewall (AB tests: deletes, credential files, uploads, protected paths, terminal, session export) re-verified; workspace emergency stop added (PRE-1). No engine change."
+ }
+]

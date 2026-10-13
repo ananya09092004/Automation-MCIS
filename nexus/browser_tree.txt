@@ -1,0 +1,196 @@
+Folder PATH listing for volume OS
+Volume serial number is 000002A8 F082:9E82
+C:\USERS\ANUSH\ONEDRIVE\DESKTOP\NEXUS\BROWSER
++---actions
+|   |   actions.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           actions.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---controller
+|   |   controller.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           controller.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---downloads
+|       OpenCart-TestCases (1).xlsx
+|       
++---elements
+|   |   finder.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           finder.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---engines
+|   |   engine.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           engine.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---execution
+|   |   action_executor.py
+|   |   autonomous_executor.py
+|   |   execution_pipeline.py
+|   |   workflow_engine.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           action_executor.cpython-312.pyc
+|           autonomous_executor.cpython-312.pyc
+|           execution_pipeline.cpython-312.pyc
+|           workflow_engine.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---forms
++---inspection
+|   |   inspector.py
+|   |   models.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           inspector.cpython-312.pyc
+|           models.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---intelligence
+|   |   action_selector.py
+|   |   analyzer.py
+|   |   classifier.py
+|   |   decision.py
+|   |   element_matcher.py
+|   |   execution_planner.py
+|   |   goal_detector.py
+|   |   goal_executor.py
+|   |   goal_progress.py
+|   |   matcher.py
+|   |   models.py
+|   |   replanner.py
+|   |   scorer.py
+|   |   world_state.py
+|   |   world_updater.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           action_selector.cpython-312.pyc
+|           analyzer.cpython-312.pyc
+|           classifier.cpython-312.pyc
+|           decision.cpython-312.pyc
+|           element_matcher.cpython-312.pyc
+|           execution_planner.cpython-312.pyc
+|           goal_detector.cpython-312.pyc
+|           goal_executor.cpython-312.pyc
+|           goal_progress.cpython-312.pyc
+|           matcher.cpython-312.pyc
+|           models.cpython-312.pyc
+|           replanner.cpython-312.pyc
+|           scorer.cpython-312.pyc
+|           world_state.cpython-312.pyc
+|           world_updater.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---interaction
+|   |   safe_executor.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           safe_executor.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---models
++---navigation
++---pages
++---planner
+|       planner.py
+|       __init__.py
+|       
++---registry
+|   |   models.py
+|   |   registry.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           models.cpython-312.pyc
+|           registry.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---runtime
+|   |   closed_loop.py
+|   |   runtime.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           closed_loop.cpython-312.pyc
+|           runtime.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---session
+|   |   manager.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           manager.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---skills
+|   |   download.py
+|   |   form_fill.py
+|   |   infinite_scroll.py
+|   |   login.py
+|   |   navigation.py
+|   |   pagination.py
+|   |   popup.py
+|   |   search.py
+|   |   table_reader.py
+|   |   upload.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           download.cpython-312.pyc
+|           form_fill.cpython-312.pyc
+|           infinite_scroll.cpython-312.pyc
+|           login.cpython-312.pyc
+|           navigation.cpython-312.pyc
+|           pagination.cpython-312.pyc
+|           popup.cpython-312.pyc
+|           search.cpython-312.pyc
+|           table_reader.cpython-312.pyc
+|           upload.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---tabs
++---uploads
++---verifier
+|   |   runtime_verifier.py
+|   |   verifier.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           runtime_verifier.cpython-312.pyc
+|           verifier.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
++---wait
+|   |   waiter.py
+|   |   __init__.py
+|   |   
+|   \---__pycache__
+|           waiter.cpython-312.pyc
+|           __init__.cpython-312.pyc
+|           
+\---workflow
+    |   executor.py
+    |   __init__.py
+    |   
+    \---__pycache__
+            executor.cpython-312.pyc
+            __init__.cpython-312.pyc
+            
