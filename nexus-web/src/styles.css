@@ -92,7 +92,7 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .grow { flex: 1; min-width: 220px; }
 .align-end { margin-bottom: 12px; }
 
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; min-width: 0; box-shadow: var(--shadow); }
 .card-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; gap: 8px; }
 .card-warning { border-color: #fedf89; background: var(--warning-soft); }
 
@@ -116,7 +116,8 @@ code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monosp
 .list { list-style: none; margin: 0; padding: 0; }
 .list-row { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border); }
 .list-row:last-child { border-bottom: 0; }
-.list-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; font-weight: 500; }
+.list-main { display: block; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); text-decoration: none; font-weight: 500; }
+.list-row > :not(.list-main) { flex-shrink: 0; white-space: nowrap; }
 .list-main:hover { color: var(--primary); }
 .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }

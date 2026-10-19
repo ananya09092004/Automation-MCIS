@@ -1,12 +1,13 @@
-# Nexus — limitation ledger (after Layer 10)
+# Nexus — limitation ledger (after Layer 10 + final audit)
 
 Machine-readable: `LAYER10_LEDGER.json`. Statuses: CLOSED, EXTERNAL_VALIDATION (code + deterministic tests done; needs a real account / environment), INTENTIONALLY_UNSUPPORTED (by design, with the supported alternative), REMAINING.
 
 | Status | Count |
 |---|---|
-| CLOSED | 54 |
+| CLOSED | 58 |
 | EXTERNAL_VALIDATION | 11 |
 | INTENTIONALLY_UNSUPPORTED | 26 |
+| REMAINING | 6 |
 
 | Id | Status | Class | Limitation | Resolution |
 |---|---|---|---|---|
@@ -101,3 +102,13 @@ Machine-readable: `LAYER10_LEDGER.json`. Statuses: CLOSED, EXTERNAL_VALIDATION (
 | L10-B2 | CLOSED | A | Workflow runner could drive a job claimed after stop() | See L9-N6. |
 | L10-B3 | CLOSED | A | Server start-up crashed with the revenue suite on (the default): the webhook credential service was created without a store ("credential store is required") | routes/revenue.js passes a store that refuses every call (webhooks only encrypt/decrypt; the Layer 5 integration-credential store is never used on this path). Found by the local start-up smoke; regression test revenue P25-1 (fails on the old code); server boots in dev, production and integrations+key modes. |
 | L10-B4 | CLOSED | A | Many concurrent API submissions to ONE monitor could exhaust the 25-attempt optimistic update loop on a slower database → 409 MONITOR_CONFLICT; the observation was stored but never applied, and a client retry with the same key only replayed it | monitoringService.js serializes applying observations per monitor inside a process (the version check still guards other instances). Found by the local PostgreSQL load test; regression test revenue P25-2 (old code: 176 of 216 version checks failed; fixed: 0) + mutation #43; local PostgreSQL load passes (200 monitors, one observation per key). |
+| F-1 | CLOSED | A | CORS-denied origins and malformed / oversized JSON bodies returned 500 (and were logged as server errors) | middleware/errorResponses.js: denied origin → 403 CORS_ORIGIN_DENIED (no ACAO header, no data); invalid JSON 400, too large 413, bad encoding 415, aborted 400; other errors 500 without err.message. __tests__/errorHandling.test.js (4 of 6 fail on the old code). |
+| F-2 | CLOSED | A | Desktop pairing: the device token was returned to anyone holding the session id, forever; an approved session could be re-approved by another account; sessions never expired | backend-addon/devicePairing.js: 15-minute TTL, 409 PAIRING_ALREADY_APPROVED, one-time token pickup (compare-and-clear → 410 PAIRING_TOKEN_COLLECTED). Agent pairing.js is compatible (stops after the first token, reads deviceId). __tests__/devicePairing.test.js (all fail on the old code). |
+| F-3 | CLOSED | A | No way to revoke a paired desktop device | DELETE /api/device/:deviceId (owner only, 404 otherwise): deletes the token, clears pairing copies, closes the live agent socket (code 4003), audits device_revoked. Nexus web console → Settings → Paired desktop devices. |
+| F-4 | CLOSED | A | Legacy public tables without RLS were readable / writable with the public anon key under Supabase default grants | Migration 20261003_legacy_tables_rls: RLS on every public table, anon/authenticated privileges revoked, public functions executable by service_role only. Verified on PostgreSQL with Supabase-style grants: anon read the victim's device token before, permission denied after; idempotent; all PG suites pass; schema-audit.sql now flags any regression. |
+| F-R1 | REMAINING | B | nexus/api_server.py accepts unauthenticated requests when NEXUS_DEVICE_TOKEN is unset, binds 0.0.0.0:8000 and compares the token with != (not constant-time) | Not changed (Nexus is out of scope for this pass). Blocking for distributing the desktop engine to customers: fail closed, bind 127.0.0.1, use hmac.compare_digest. Until then always set NEXUS_DEVICE_TOKEN and firewall port 8000. |
+| F-R2 | REMAINING | C | nexus/requirements.txt misses python-dotenv and win10toast; tests import the missing module browser.intelligence.action_model | Not changed. Add the two packages and fix or remove the broken test import. |
+| F-R3 | REMAINING | C | nexus/screen.png and nexus/desktop_test.png are real desktop screenshots in the public repository (location and Windows user path visible) | Owner decision: delete the files; optionally rewrite history (git filter-repo) and force-push. |
+| F-R4 | REMAINING | C | Device tokens are stored in plaintext; public pairing endpoints have no rate limit; no global API rate limit | Hash device tokens at rest; add per-IP limits once trust proxy is configured for the real hosting topology. |
+| F-R5 | REMAINING | C | Dependency advisories (npm audit): backend 1 critical (protobufjs via @xenova/transformers, major upgrade) + 13 high; mcis/frontend CRA chain 3 critical / 74 high (build-time); nexus-web 4 high via firebase → @grpc/grpc-js (not in the browser bundle) | Report only; no forced upgrades. Plan the @xenova/transformers major upgrade and a CRA → Vite migration separately. |
+| F-R6 | REMAINING | E | No Dockerfile, deploy manifests or CI workflow; a 3 MB git bundle (nexus-layer1-checkpoint.bundle, secret scan clean) is committed at the repo root | Add CI running backend + nexus-web tests; remove the bundle with git rm --cached and ignore *.bundle. |

@@ -817,5 +817,95 @@
   "plan": "Layer 10",
   "status": "CLOSED",
   "resolution": "monitoringService.js serializes applying observations per monitor inside a process (the version check still guards other instances). Found by the local PostgreSQL load test; regression test revenue P25-2 (old code: 176 of 216 version checks failed; fixed: 0) + mutation #43; local PostgreSQL load passes (200 monitors, one observation per key)."
+ },
+ {
+  "id": "F-1",
+  "source": "Final launch-readiness audit",
+  "limitation": "CORS-denied origins and malformed / oversized JSON bodies returned 500 (and were logged as server errors)",
+  "class": "A",
+  "plan": "Final hardening",
+  "status": "CLOSED",
+  "resolution": "middleware/errorResponses.js: denied origin → 403 CORS_ORIGIN_DENIED (no ACAO header, no data); invalid JSON 400, too large 413, bad encoding 415, aborted 400; other errors 500 without err.message. __tests__/errorHandling.test.js (4 of 6 fail on the old code)."
+ },
+ {
+  "id": "F-2",
+  "source": "Final launch-readiness audit",
+  "limitation": "Desktop pairing: the device token was returned to anyone holding the session id, forever; an approved session could be re-approved by another account; sessions never expired",
+  "class": "A",
+  "plan": "Final hardening",
+  "status": "CLOSED",
+  "resolution": "backend-addon/devicePairing.js: 15-minute TTL, 409 PAIRING_ALREADY_APPROVED, one-time token pickup (compare-and-clear → 410 PAIRING_TOKEN_COLLECTED). Agent pairing.js is compatible (stops after the first token, reads deviceId). __tests__/devicePairing.test.js (all fail on the old code)."
+ },
+ {
+  "id": "F-3",
+  "source": "Final launch-readiness audit",
+  "limitation": "No way to revoke a paired desktop device",
+  "class": "A",
+  "plan": "Final hardening",
+  "status": "CLOSED",
+  "resolution": "DELETE /api/device/:deviceId (owner only, 404 otherwise): deletes the token, clears pairing copies, closes the live agent socket (code 4003), audits device_revoked. Nexus web console → Settings → Paired desktop devices."
+ },
+ {
+  "id": "F-4",
+  "source": "Final launch-readiness audit",
+  "limitation": "Legacy public tables without RLS were readable / writable with the public anon key under Supabase default grants",
+  "class": "A",
+  "plan": "Final hardening",
+  "status": "CLOSED",
+  "resolution": "Migration 20261003_legacy_tables_rls: RLS on every public table, anon/authenticated privileges revoked, public functions executable by service_role only. Verified on PostgreSQL with Supabase-style grants: anon read the victim's device token before, permission denied after; idempotent; all PG suites pass; schema-audit.sql now flags any regression."
+ },
+ {
+  "id": "F-R1",
+  "source": "Final launch-readiness audit",
+  "limitation": "nexus/api_server.py accepts unauthenticated requests when NEXUS_DEVICE_TOKEN is unset, binds 0.0.0.0:8000 and compares the token with != (not constant-time)",
+  "class": "B",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Not changed (Nexus is out of scope for this pass). Blocking for distributing the desktop engine to customers: fail closed, bind 127.0.0.1, use hmac.compare_digest. Until then always set NEXUS_DEVICE_TOKEN and firewall port 8000."
+ },
+ {
+  "id": "F-R2",
+  "source": "Final launch-readiness audit",
+  "limitation": "nexus/requirements.txt misses python-dotenv and win10toast; tests import the missing module browser.intelligence.action_model",
+  "class": "C",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Not changed. Add the two packages and fix or remove the broken test import."
+ },
+ {
+  "id": "F-R3",
+  "source": "Final launch-readiness audit",
+  "limitation": "nexus/screen.png and nexus/desktop_test.png are real desktop screenshots in the public repository (location and Windows user path visible)",
+  "class": "C",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Owner decision: delete the files; optionally rewrite history (git filter-repo) and force-push."
+ },
+ {
+  "id": "F-R4",
+  "source": "Final launch-readiness audit",
+  "limitation": "Device tokens are stored in plaintext; public pairing endpoints have no rate limit; no global API rate limit",
+  "class": "C",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Hash device tokens at rest; add per-IP limits once trust proxy is configured for the real hosting topology."
+ },
+ {
+  "id": "F-R5",
+  "source": "Final launch-readiness audit",
+  "limitation": "Dependency advisories (npm audit): backend 1 critical (protobufjs via @xenova/transformers, major upgrade) + 13 high; mcis/frontend CRA chain 3 critical / 74 high (build-time); nexus-web 4 high via firebase → @grpc/grpc-js (not in the browser bundle)",
+  "class": "C",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Report only; no forced upgrades. Plan the @xenova/transformers major upgrade and a CRA → Vite migration separately."
+ },
+ {
+  "id": "F-R6",
+  "source": "Final launch-readiness audit",
+  "limitation": "No Dockerfile, deploy manifests or CI workflow; a 3 MB git bundle (nexus-layer1-checkpoint.bundle, secret scan clean) is committed at the repo root",
+  "class": "E",
+  "plan": "Final hardening",
+  "status": "REMAINING",
+  "resolution": "Add CI running backend + nexus-web tests; remove the bundle with git rm --cached and ignore *.bundle."
  }
 ]
