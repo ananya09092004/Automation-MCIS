@@ -1,0 +1,30 @@
+{
+  "name": "nexus-web",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Nexus \u2014 B2B operations console for AI agents, tasks, workflows and approvals (separate from the MCIS app in mcis/frontend).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:e2e": "vitest run --config vitest.e2e.config.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "firebase": "^12.19.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^26.1.0",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7"
+  }
+}
