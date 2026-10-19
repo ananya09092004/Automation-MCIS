@@ -1,5 +1,6 @@
 -- =====================================================================
--- Layer 9 — schema audit for the Nexus Layer 1–9 tables and RPCs.
+-- Layer 9 — schema audit for the Nexus Layer 1–10 tables and RPCs, plus
+-- (final hardening) RLS + no anon/authenticated grants on EVERY public table.
 --   psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/schema-audit.sql
 -- Prints one row per VIOLATION (none = pass) and a summary line.
 -- Checks: every table exists, RLS is on, anon/authenticated hold no table
@@ -49,6 +50,14 @@ v as (
         'claim_due_monitors','claim_qa_result','claim_webhook_deliveries','enforce_monitored_product_limit','enforce_integration_limit','retention_purge_revenue','purge_workspace_audit')
       and ((r = 'public' and exists (select 1 from aclexplode(coalesce(p.proacl, acldefault('f', p.proowner))) x where x.grantee = 0 and x.privilege_type = 'EXECUTE'))
         or (r <> 'public' and exists (select 1 from pg_roles where rolname = r) and has_function_privilege(r, p.oid, 'EXECUTE')))
+  -- Final hardening (20261003_legacy_tables_rls): EVERY public table, including
+  -- legacy MCIS tables outside the list above, is deny-by-default.
+  union all select c.relname::text, 'RLS disabled (any public table)' from pg_class c
+    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p') and not c.relrowsecurity
+  union all select c.relname::text, format('%s has %s on table (any public table)', r, priv) from pg_class c,
+      unnest(array['anon','authenticated']) r, unnest(array['SELECT','INSERT','UPDATE','DELETE']) priv
+    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
+      and exists (select 1 from pg_roles where rolname = r) and has_table_privilege(r, c.oid, priv)
 )
 select name, problem from v order by 1, 2;
 

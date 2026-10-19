@@ -6,6 +6,15 @@ const logger = require('../services/logger');
 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// Final hardening: a pairing session is short-lived (the agent itself gives up
+// after 5 minutes) and its device token can be collected exactly once.
+const PAIRING_TTL_MS = 15 * 60 * 1000;
+function isExpired(session, now = Date.now()) {
+  if (!session || !session.created_at) return false; // DB default now() always sets it
+  const t = Date.parse(session.created_at);
+  return Number.isFinite(t) && now - t > PAIRING_TTL_MS;
+}
+
 // Run this SQL once in Supabase:
 // create table pairing_sessions (
 //   session_id text primary key,
@@ -48,8 +57,14 @@ router.post('/pair/approve', async (req, res) => {
       .eq('session_id', sessionId)
       .single();
 
-    if (fetchErr || !session) {
+    if (fetchErr || !session || isExpired(session)) {
       return res.status(404).json({ success: false, error: 'Pairing session not found or expired' });
+    }
+    // A session already approved by another account can never be re-approved
+    // (otherwise anyone who learned the session id could pair the device to
+    // their own account and receive commands meant for it).
+    if (session.approved && session.user_id && session.user_id !== userId) {
+      return res.status(409).json({ success: false, error: 'This pairing request was already approved by another account', code: 'PAIRING_ALREADY_APPROVED' });
     }
 
     const token = crypto.randomBytes(32).toString('hex');
@@ -78,17 +93,30 @@ router.get('/pair/status', async (req, res) => {
 
     const { data: session, error } = await supabase
       .from('pairing_sessions')
-      .select('approved, token, device_id')
+      .select('approved, token, device_id, created_at')
       .eq('session_id', sessionId)
       .single();
 
-    if (error || !session) {
+    if (error || !session || (!session.approved && isExpired(session))) {
       return res.status(404).json({ success: false, error: 'Session not found' });
     }
 
     if (!session.approved) {
       return res.json({ approved: false });
     }
+
+    // One-time pickup: clear the stored copy with a compare-and-set, so the
+    // token leaves the server exactly once (the agent stops polling after it).
+    const gone = () => res.status(410).json({ success: false, error: 'This pairing was already completed. Start pairing again on the device.', code: 'PAIRING_TOKEN_COLLECTED' });
+    if (!session.token) return gone();
+    const { data: claimed, error: claimErr } = await supabase
+      .from('pairing_sessions')
+      .update({ token: null })
+      .eq('session_id', sessionId)
+      .eq('token', session.token)
+      .select('session_id');
+    if (claimErr) throw claimErr;
+    if (!claimed || !claimed.length) return gone();
 
     res.json({ approved: true, token: session.token, deviceId: session.device_id });
   } catch (err) {
@@ -98,3 +126,4 @@ router.get('/pair/status', async (req, res) => {
 });
 
 module.exports = router;
+module.exports.PAIRING_TTL_MS = PAIRING_TTL_MS;

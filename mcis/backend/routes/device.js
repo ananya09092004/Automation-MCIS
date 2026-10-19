@@ -48,4 +48,36 @@ router.get('/list', async (req, res) => {
   }
 });
 
+// Final hardening: revoke a paired device (the caller's own devices only).
+// Its token stops working at once, stored pairing copies are cleared and a
+// live agent connection is closed. Another user's device id → 404.
+router.delete('/:deviceId', async (req, res) => {
+  try {
+    const userId = req.user && req.user.uid;
+    const { deviceId } = req.params;
+    if (!userId) return res.status(401).json({ success: false, error: 'Authentication required' });
+    if (typeof deviceId !== 'string' || !deviceId || deviceId.length > 200) {
+      return res.status(400).json({ success: false, error: 'deviceId is invalid' });
+    }
+    const { data, error } = await supabase
+      .from('device_tokens')
+      .delete()
+      .eq('user_id', userId)
+      .eq('device_id', deviceId)
+      .select('device_id');
+    if (error) throw error;
+    if (!data || !data.length) return res.status(404).json({ success: false, error: 'Device not found' });
+
+    await supabase.from('pairing_sessions').update({ token: null }).eq('device_id', deviceId).eq('user_id', userId);
+    const disconnected = require('../agentSocket').disconnectAgent(userId, deviceId);
+    try {
+      Promise.resolve(require('../security-engine/auditLog').appendAuditLog(userId, 'device_revoked', { deviceId, disconnected }, { success: true })).catch(() => {});
+    } catch { /* audit is best-effort */ }
+    res.json({ success: true, revoked: deviceId, disconnected });
+  } catch (err) {
+    logger.error(`Device revoke error: ${err.message}`);
+    res.status(500).json({ success: false, error: 'Could not revoke device' });
+  }
+});
+
 module.exports = router;

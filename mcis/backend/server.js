@@ -1,6 +1,7 @@
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const { corsOriginDenied, createGlobalErrorHandler } = require('./middleware/errorResponses');
 const fs = require('fs');
 const helmet = require('helmet');
 require('dotenv').config();
@@ -171,7 +172,7 @@ app.use(metrics.middleware());
 app.use(cors({
   origin(origin, callback) {
     if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error('Not allowed by CORS'));
+    return callback(corsOriginDenied()); // → 403 in the global handler (was a 500)
   },
   credentials: true,
 }));
@@ -381,10 +382,9 @@ app.use((req, res) => {
 // ================================
 // Global Error Handler
 // ================================
-app.use((err, req, res, next) => {
-  winstonLogger.error(`${err.message} | Route: ${req.path} | request ${req.requestId || '-'}`);
-  res.status(500).json({ success: false, error: 'Something went wrong', requestId: req.requestId || null });
-});
+// Client errors (disallowed CORS origin, invalid / oversized JSON) keep their
+// 4xx status; anything else is a generic 500. Never returns err.message.
+app.use(createGlobalErrorHandler(winstonLogger));
 
 app.use(errorHandler);
 

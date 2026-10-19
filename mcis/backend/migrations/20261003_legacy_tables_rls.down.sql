@@ -1,0 +1,17 @@
+-- =====================================================================
+-- Final hardening — deny-by-default for LEGACY tables (DOWN)
+-- =====================================================================
+-- Intentionally a no-op.
+--
+-- The UP migration only ENABLES row-level security and REMOVES anon /
+-- authenticated access. The state before it is unknown (some projects
+-- enabled RLS in the dashboard), and "restoring" it could only re-expose
+-- data such as desktop-agent tokens to the public anon key. The backend
+-- uses the service-role key, which bypasses RLS, so nothing needs to be
+-- undone for the application to work.
+--
+-- If a specific legacy table must be re-opened, do it explicitly and with
+-- a policy, e.g.:
+--   create policy <name> on public.<table> for select to authenticated using (...);
+-- =====================================================================
+select 1;

@@ -93,4 +93,15 @@ function sendCommandToAgent(userId, deviceId, action, payload, timeoutMs = 15000
   });
 }
 
-module.exports = { attachAgentSocket, sendCommandToAgent };
+// Final hardening: a revoked device's live connection is closed immediately
+// (its token row is deleted, so it cannot reconnect).
+function disconnectAgent(userId, deviceId) {
+  const key = `${userId}:${deviceId}`;
+  const agentWs = connectedAgents.get(key);
+  if (!agentWs) return false;
+  connectedAgents.delete(key);
+  try { agentWs.close(4003, 'Device revoked'); } catch { /* already closed */ }
+  return true;
+}
+
+module.exports = { attachAgentSocket, sendCommandToAgent, disconnectAgent };
