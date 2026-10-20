@@ -27,6 +27,7 @@ export default function Tasks() {
   return (
     <>
       <PageHeader
+        eyebrow="Operate"
         title="Tasks"
         description="Every task an agent runs, with its status, approvals and evidence."
         actions={<><Button size="sm" onClick={res.refresh}>Refresh</Button><Button variant="primary" onClick={() => setAsking(true)}>Create task</Button></>}
@@ -51,7 +52,7 @@ function TaskTable({ rows, filter, onAsk }) {
   if (!rows.length) return <EmptyState title="No tasks yet" action={<Button variant="primary" onClick={onAsk}>Create task</Button>}>Tasks you or your workflows start appear here.</EmptyState>;
   if (!shown.length) return <EmptyState title={`No ${filter.label.toLowerCase()} tasks`} />;
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
       <table className="table">
         <thead><tr><th>Task</th><th>Status</th><th>Progress</th><th>Started</th></tr></thead>
         <tbody>
@@ -99,6 +100,7 @@ export function TaskDetail({ id }) {
     <>
       <BackLink />
       <PageHeader
+        eyebrow="Operate"
         title={e.goal || 'Task'}
         description={<>Started {fmtDate(e.createdAt)}{e.finishedAt ? ` · finished ${fmtDate(e.finishedAt)}` : ''}</>}
         actions={<>
@@ -143,7 +145,7 @@ export function TaskDetail({ id }) {
       </div>
       <Card title="Steps">
         {evidence && evidence.steps && evidence.steps.length ? (
-          <div className="table-wrap">
+          <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead><tr><th>#</th><th>Action</th><th>Risk</th><th>Status</th><th>Verification</th><th>Detail</th></tr></thead>
               <tbody>

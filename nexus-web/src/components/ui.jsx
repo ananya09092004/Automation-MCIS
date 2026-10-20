@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react';
 import { STATUS_TONE, humanize } from '../lib/format.js';
+import Icon from './icons.jsx';
 
-export function PageHeader({ title, description, actions }) {
+export function PageHeader({ title, description, actions, eyebrow }) {
   return (
     <header className="page-header">
       <div>
+        {eyebrow ? <span className="eyebrow">{eyebrow}</span> : null}
         <h1>{title}</h1>
         {description ? <p className="muted">{description}</p> : null}
       </div>
@@ -27,10 +29,10 @@ export function Card({ title, actions, children, className = '', ...rest }) {
   );
 }
 
-export function Stat({ label, value, hint, tone, testId }) {
+export function Stat({ label, value, hint, tone, testId, dot, live }) {
   return (
     <div className={`stat ${tone ? `stat-${tone}` : ''}`} data-testid={testId}>
-      <div className="stat-label">{label}</div>
+      <div className="stat-label">{dot ? <Dot tone={dot} live={live} /> : null}{label}</div>
       <div className="stat-value">{value}</div>
       {hint ? <div className="stat-hint">{hint}</div> : null}
     </div>
@@ -57,17 +59,42 @@ export function Button({ variant = 'secondary', size, busy, children, className 
   );
 }
 
-export function Loading({ label = 'Loading…' }) {
+/** Status dot; `live` pulses (running work). */
+export function Dot({ tone = 'neutral', live = false }) {
+  return <span className={`dot dot-${tone} ${live ? 'live' : ''}`} aria-hidden="true" />;
+}
+
+const RISK_LABEL = { green: 'GREEN', yellow: 'YELLOW', red: 'RED', blocked: 'BLOCKED' };
+/** Risk tier tag (green / yellow / red / blocked) — text, not colour alone. */
+export function RiskTag({ risk }) {
+  const r = String(risk || '').toLowerCase();
+  const cls = r === 'blocked' ? 'block' : r;
+  return <span className={`risk risk-${cls}`}>{RISK_LABEL[r] || humanize(risk)}</span>;
+}
+
+export function Loading({ label = 'Loading…', variant }) {
+  if (variant === 'spinner') {
+    return (
+      <div className="state state-loading" role="status">
+        <span className="spinner" aria-hidden="true" /> {label}
+      </div>
+    );
+  }
   return (
-    <div className="state state-loading" role="status">
-      <span className="spinner" aria-hidden="true" /> {label}
+    <div className="skeleton" role="status" aria-live="polite">
+      <span className="sr-only">{label}</span>
+      <div className="sk tall w-90" aria-hidden="true" />
+      <div className="sk w-70" aria-hidden="true" />
+      <div className="sk w-50" aria-hidden="true" />
+      <div className="sk w-30" aria-hidden="true" />
     </div>
   );
 }
 
-export function EmptyState({ title, children, action }) {
+export function EmptyState({ title, children, action, icon }) {
   return (
     <div className="state state-empty">
+      {icon ? <div className="state-icon" aria-hidden="true"><Icon name={icon} size={20} /></div> : null}
       <div className="state-title">{title}</div>
       {children ? <div className="muted">{children}</div> : null}
       {action ? <div className="state-action">{action}</div> : null}
@@ -79,6 +106,7 @@ export function ErrorState({ error, onRetry, title = 'Could not load this' }) {
   const status = error && error.status;
   return (
     <div className="state state-error" role="alert">
+      <div className="state-icon" aria-hidden="true"><Icon name="alert" size={20} /></div>
       <div className="state-title">{title}</div>
       <div className="muted">{(error && error.message) || 'Something went wrong.'}</div>
       {onRetry && status !== 403 && status !== 404 ? <Button size="sm" onClick={onRetry}>Try again</Button> : null}
@@ -108,7 +136,7 @@ export function Modal({ title, onClose, children, footer }) {
       <div className="modal" role="dialog" aria-modal="true" aria-label={title} ref={ref}>
         <div className="modal-head">
           <h2>{title}</h2>
-          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}>×</button>
+          <button type="button" className="icon-btn" aria-label="Close" onClick={onClose}><Icon name="x" size={18} /></button>
         </div>
         <div className="modal-body">{children}</div>
         {footer ? <div className="modal-foot">{footer}</div> : null}

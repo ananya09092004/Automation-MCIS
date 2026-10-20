@@ -3,9 +3,11 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 // Minimal History-API router (no dependency). Production hosting must
 // rewrite unknown paths to /index.html (see vercel.json).
 const RouterContext = createContext(null);
+/** Route matching uses the path only (never the query string or #fragment). */
+const pathOnly = (p) => String(p || '/').split(/[?#]/)[0] || '/';
 
 export function RouterProvider({ initialPath, children }) {
-  const [path, setPath] = useState(() => initialPath || (typeof window !== 'undefined' ? window.location.pathname : '/'));
+  const [path, setPath] = useState(() => pathOnly(initialPath || (typeof window !== 'undefined' ? window.location.pathname : '/')));
   useEffect(() => {
     const onPop = () => setPath(window.location.pathname);
     window.addEventListener('popstate', onPop);
@@ -14,7 +16,7 @@ export function RouterProvider({ initialPath, children }) {
   const navigate = useCallback((to) => {
     if (to === path) return;
     try { window.history.pushState({}, '', to); } catch { /* non-browser */ }
-    setPath(to);
+    setPath(pathOnly(to));
     if (typeof window !== 'undefined' && window.scrollTo) { try { window.scrollTo(0, 0); } catch { /* jsdom */ } }
   }, [path]);
   const value = useMemo(() => ({ path, navigate }), [path, navigate]);

@@ -45,7 +45,7 @@ export default function Approvals() {
   const res = useResource(() => loadApprovals(api, workspaceId), [api, workspaceId]);
   return (
     <>
-      <PageHeader title="Approvals" description="Risky agent actions wait here for a human decision." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
+      <PageHeader eyebrow="Operate" title="Approvals" description="Risky agent actions wait here for a human decision." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
       <Resource res={res} loadingLabel="Loading approvals…" errorTitle="Could not load approvals">
         {(items) => (items.length ? (
           <div className="stack">{items.map((it) => <ApprovalCard key={it.key} item={it} onDone={res.refresh} />)}</div>
@@ -85,7 +85,7 @@ function ApprovalCard({ item, onDone }) {
       <div className="approval-head">
         <div>
           <div className="small muted">{item.source === 'task' ? 'Task' : 'Workflow run'}</div>
-          <h3>{item.href ? <Link to={item.href} className="link">{item.title}</Link> : item.title}</h3>
+          <h2 className="h3">{item.href ? <Link to={item.href} className="link">{item.title}</Link> : item.title}</h2>
         </div>
         <Badge status={a.riskTier}>{`${humanize(a.riskTier)} risk`}</Badge>
       </div>

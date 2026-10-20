@@ -23,7 +23,7 @@ export default function Billing() {
 
   return (
     <>
-      <PageHeader title="Usage & Billing" description="Plan, limits and metered usage for this workspace, as recorded by the server." />
+      <PageHeader eyebrow="Workspace" title="Usage & Billing" description="Plan, limits and metered usage for this workspace, as recorded by the server." />
       <Resource res={res} loadingLabel="Loading billing…" errorTitle="Could not load billing">
         {({ summary: s, usage }) => (
           <div className="stack">
@@ -57,7 +57,7 @@ export default function Billing() {
             </div>
             <Card title="Metered usage this period">
               {s.meters && s.meters.length ? (
-                <div className="table-wrap">
+                <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
                   <table className="table">
                     <thead><tr><th>Capability</th><th>Used</th><th>Limit</th><th>Usage</th></tr></thead>
                     <tbody>

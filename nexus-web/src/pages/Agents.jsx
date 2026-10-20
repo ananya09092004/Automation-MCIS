@@ -23,6 +23,7 @@ export default function Agents() {
   return (
     <>
       <PageHeader
+        eyebrow="Operate"
         title="AI Agents"
         description="Named agents with standing instructions and a maximum risk level. Every action still passes the workspace firewall and approvals."
         actions={isAdmin ? <Button variant="primary" onClick={() => setCreating(true)}>New agent</Button> : null}
@@ -35,7 +36,7 @@ export default function Agents() {
                 <div className="agent-head">
                   <span className="agent-avatar" aria-hidden="true">{a.name.charAt(0).toUpperCase()}</span>
                   <div>
-                    <h3>{a.name}</h3>
+                    <h2 className="h3">{a.name}</h2>
                     <div className="small muted">{humanize(a.role)} agent</div>
                   </div>
                   <Badge status={a.status} />

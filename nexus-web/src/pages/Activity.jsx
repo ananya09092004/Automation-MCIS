@@ -11,7 +11,7 @@ export default function Activity() {
   const [tab, setTab] = useState('audit');
   return (
     <>
-      <PageHeader title="Activity" description="The workspace audit trail and security events. Payloads are redacted; secrets are never recorded." />
+      <PageHeader eyebrow="Govern" title="Activity" description="The workspace audit trail and security events. Payloads are redacted; secrets are never recorded." />
       {!isAdmin ? (
         <Card><Notice tone="info" title="Admins only">The audit log and security events are visible to workspace owners and admins. Your own tasks and their evidence are under Tasks.</Notice></Card>
       ) : (
@@ -35,7 +35,7 @@ function AuditLog() {
     <Card actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} title="Audit log">
       <Resource res={res} loadingLabel="Loading audit log…" errorTitle="Could not load the audit log">
         {(rows) => (rows.length ? (
-          <div className="table-wrap">
+          <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead><tr><th>When</th><th>Action</th><th>Actor</th><th>Result</th></tr></thead>
               <tbody>
@@ -64,7 +64,7 @@ function SecurityEvents() {
     <Card actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} title="Security events">
       <Resource res={res} loadingLabel="Loading security events…" errorTitle="Could not load security events">
         {(rows) => (rows.length ? (
-          <div className="table-wrap">
+          <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
               <thead><tr><th>When</th><th>Event</th><th>Actor</th><th>Result</th></tr></thead>
               <tbody>

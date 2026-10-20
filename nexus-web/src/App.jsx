@@ -15,13 +15,15 @@ import Activity from './pages/Activity.jsx';
 import Billing from './pages/Billing.jsx';
 import Team from './pages/Team.jsx';
 import Settings from './pages/Settings.jsx';
+import Security from './pages/Security.jsx';
+import JoinWorkspace from './pages/JoinWorkspace.jsx';
 import SignIn from './pages/SignIn.jsx';
 import NotFound from './pages/NotFound.jsx';
 
 const ROUTES = [
   ['/', Dashboard], ['/agents', Agents], ['/tasks', Tasks], ['/tasks/:id', TaskDetail], ['/workflows', Workflows],
   ['/approvals', Approvals], ['/integrations', Integrations], ['/activity', Activity], ['/billing', Billing],
-  ['/team', Team], ['/settings', Settings],
+  ['/team', Team], ['/settings', Settings], ['/security', Security], ['/workspace', JoinWorkspace],
 ];
 
 function Page() {
@@ -30,14 +32,14 @@ function Page() {
   for (const [pattern, Component] of ROUTES) {
     const params = matchPath(pattern, path);
     // key: remount on workspace change so no data from another workspace lingers.
-    if (params) return <Component key={`${workspaceId}:${path}`} {...params} />;
+    if (params) return <div className="page" key={`${workspaceId}:${path}`}><Component {...params} /></div>;
   }
   return <NotFound />;
 }
 
 function Authenticated() {
   const ws = useWorkspace();
-  if (ws.loading && !ws.workspaces.length) return <div className="center-screen"><Loading label="Loading your workspaces…" /></div>;
+  if (ws.loading && !ws.workspaces.length) return <div className="center-screen"><Loading variant="spinner" label="Loading your workspaces…" /></div>;
   if (ws.error) return <div className="center-screen"><ErrorState error={ws.error} onRetry={ws.reload} title="Could not load your workspaces" /></div>;
   if (!ws.current) return <div className="center-screen"><ErrorState error={{ message: 'You are not a member of any workspace.' }} title="No workspace" /></div>;
   return <Shell><Page /></Shell>;
@@ -45,7 +47,7 @@ function Authenticated() {
 
 function Gate() {
   const auth = useAuth();
-  if (auth.status === 'loading') return <div className="center-screen"><Loading label="Checking your session…" /></div>;
+  if (auth.status === 'loading') return <div className="center-screen"><Loading variant="spinner" label="Checking your session…" /></div>;
   if (auth.status !== 'signedIn') return <SignIn />;
   return <WorkspaceProvider><Authenticated /></WorkspaceProvider>;
 }

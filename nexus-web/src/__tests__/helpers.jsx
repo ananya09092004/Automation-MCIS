@@ -7,12 +7,17 @@ export const WS_PERSONAL = { id: '22222222-2222-4222-8222-222222222222', name: '
 export const USER = { uid: 'uid_alice', email: 'alice@acme.test', displayName: 'Alice', emailVerified: true };
 
 /** Fake auth client: starts signed in (or out) synchronously. */
-export function fakeAuth({ user = USER, signInError } = {}) {
+export function fakeAuth({ user = USER, signInError, signUpError } = {}) {
   let cb = null;
+  const calls = [];
   const client = {
+    calls,
     onChange: (fn) => { cb = fn; fn(user); return () => { cb = null; }; },
     signInWithEmail: async () => { if (signInError) throw signInError; cb && cb(USER); },
     signInWithGoogle: async () => { cb && cb(USER); },
+    signUpWithEmail: async (email, pw) => { calls.push(['signUp', email, pw]); if (signUpError) throw signUpError; cb && cb({ ...USER, email, emailVerified: false }); },
+    sendPasswordReset: async (email) => { calls.push(['reset', email]); },
+    sendVerification: async () => { calls.push(['verify']); },
     signOut: async () => { cb && cb(null); },
     getToken: async () => 'test-token',
   };

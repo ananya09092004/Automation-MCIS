@@ -11,6 +11,8 @@ export const endpoints = {
   // Workspaces & team (Layer 1)
   listWorkspaces: (api) => api.request('/api/workspaces'),
   getWorkspace: (api, w) => api.request(ws(w)),
+  createWorkspace: (api, name) => post(api, '/api/workspaces', { name }),
+  acceptInvitation: (api, token) => post(api, '/api/workspaces/invitations/accept', { token }),
   listMembers: (api, w) => api.request(`${ws(w)}/members`),
   listInvitations: (api, w) => api.request(`${ws(w)}/invitations`),
   createInvitation: (api, w, email, role) => post(api, `${ws(w)}/invitations`, { email, role }),

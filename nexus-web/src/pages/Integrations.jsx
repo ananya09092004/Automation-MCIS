@@ -35,16 +35,16 @@ export default function Integrations() {
 
   return (
     <>
-      <PageHeader title="Integrations" description="Connected systems agents may use. Credentials are encrypted server-side and never shown again." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
+      <PageHeader eyebrow="Govern" title="Integrations" description="Connected systems agents may use. Credentials are encrypted server-side and never shown again." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
       {error ? <Notice tone="danger">{error}</Notice> : null}
       <Resource res={res} loadingLabel="Loading integrations…" errorTitle="Could not load integrations">
         {({ enabled, items }) => (!enabled ? (
           <Card><Notice tone="warning" title="Integrations are not enabled on this server">An administrator must set INTEGRATIONS_ENABLED=true and INTEGRATION_ENCRYPTION_KEY on the backend.</Notice></Card>
         ) : items.length ? (
           <Card>
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
               <table className="table">
-                <thead><tr><th>Name</th><th>Provider</th><th>Status</th><th>Credential</th><th>Last used</th><th>Last check</th><th /></tr></thead>
+                <thead><tr><th>Name</th><th>Provider</th><th>Status</th><th>Credential</th><th>Last used</th><th>Last check</th><th><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>
                   {items.map((i) => (
                     <tr key={i.id}>

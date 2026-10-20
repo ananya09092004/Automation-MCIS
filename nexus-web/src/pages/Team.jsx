@@ -20,7 +20,7 @@ export default function Team() {
   if (current && current.is_personal) {
     return (
       <>
-        <PageHeader title="Team" />
+        <PageHeader eyebrow="Workspace" title="Team" />
         <Card><Notice tone="info" title="Personal workspace">Personal workspaces have a single member. Create or switch to a team workspace to invite colleagues.</Notice></Card>
       </>
     );
@@ -28,12 +28,12 @@ export default function Team() {
 
   return (
     <>
-      <PageHeader title="Team" description="Members of this workspace and their roles. Roles are enforced by the server on every request." />
+      <PageHeader eyebrow="Workspace" title="Team" description="Members of this workspace and their roles. Roles are enforced by the server on every request." />
       <div className="stack">
         <Card title="Members">
           <Resource res={members} loadingLabel="Loading members…" errorTitle="Could not load members">
             {(rows) => (rows.length ? (
-              <div className="table-wrap">
+              <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
                 <table className="table">
                   <thead><tr><th>User</th><th>Role</th><th>Joined</th></tr></thead>
                   <tbody>
@@ -106,9 +106,9 @@ function Invitations({ invites }) {
         {(rows) => {
           const pending = (rows || []).filter((i) => i.status === 'pending');
           return pending.length ? (
-            <div className="table-wrap">
+            <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
               <table className="table">
-                <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Expires</th><th /></tr></thead>
+                <thead><tr><th>Email</th><th>Role</th><th>Status</th><th>Expires</th><th><span className="sr-only">Actions</span></th></tr></thead>
                 <tbody>
                   {pending.map((i) => (
                     <tr key={i.id}>

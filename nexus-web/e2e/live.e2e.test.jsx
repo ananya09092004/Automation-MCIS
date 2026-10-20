@@ -94,6 +94,7 @@ run('Nexus web ↔ real backend', () => {
 
   it('owner: emergency stop can be switched on and off from Settings', async () => {
     renderAs(OWNER, '/settings', team.id);
+    window.confirm = () => true; // turning the stop ON asks for confirmation
     fireEvent.click(await screen.findByRole('button', { name: 'Emergency stop' }, { timeout: 20000 }));
     expect(await screen.findByText(/ON — all agent actions blocked/, {}, { timeout: 20000 })).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Release emergency stop' }));

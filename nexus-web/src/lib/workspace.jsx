@@ -44,6 +44,12 @@ export function WorkspaceProvider({ children }) {
     setState((s) => ({ ...s, currentId: id }));
   }, [uid]);
 
+  /** After creating / joining a workspace: remember it, then reload the list (pickWorkspace prefers the stored id). */
+  const adopt = useCallback(async (id) => {
+    writeStored(uid, id);
+    await load();
+  }, [uid, load]);
+
   const value = useMemo(() => {
     const current = state.list ? state.list.find((w) => w.id === state.currentId) || null : null;
     const role = current ? current.role : null;
@@ -56,9 +62,10 @@ export function WorkspaceProvider({ children }) {
       loading: state.loading,
       error: state.error,
       select,
+      adopt,
       reload: load,
     };
-  }, [state, select, load]);
+  }, [state, select, adopt, load]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

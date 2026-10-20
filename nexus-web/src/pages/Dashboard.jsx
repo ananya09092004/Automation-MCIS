@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { Badge, Button, Card, EmptyState, Notice, PageHeader, Resource, Stat } from '../components/ui.jsx';
+import { Badge, Button, Card, Dot, EmptyState, Notice, PageHeader, Resource, Stat } from '../components/ui.jsx';
+import Icon from '../components/icons.jsx';
 import AskNexusDialog from '../components/AskNexusDialog.jsx';
 import { useApi } from '../lib/apiContext.jsx';
 import { useWorkspace } from '../lib/workspace.jsx';
@@ -28,9 +29,10 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader
+        eyebrow="Operate"
         title="Dashboard"
         description="Live status of your agents, tasks, workflows and approvals."
-        actions={<><Button size="sm" onClick={res.refresh}>Refresh</Button><Button variant="primary" onClick={() => setAsking(true)}>Create task</Button></>}
+        actions={<><Button size="sm" onClick={res.refresh}>Refresh</Button><Button variant="primary" onClick={() => setAsking(true)}><Icon name="plus" size={16} />Create task</Button></>}
       />
       <Resource res={res} loadingLabel="Loading workspace overview…" errorTitle="Could not load the dashboard">
         {(d) => <DashboardBody data={d} onAsk={() => setAsking(true)} />}
@@ -48,21 +50,46 @@ function DashboardBody({ data, onAsk }) {
   const activeAgents = agents ? agents.filter((a) => a.status === 'active').length : null;
   const usage = o.usage;
   const empty = !ex.sample && !runs.sample;
+  const waiting = o.approvals ? o.approvals.waiting : 0;
+  const connectors = o.connectors || { total: 0, connected: 0, needsAttention: 0 };
 
   return (
     <div className="stack">
+      <section className="hero-strip" aria-label="Workspace status">
+        <div className="grow">
+          <h2>{o.workspace.name}</h2>
+          <p className="small">{o.workspace.isPersonal ? 'Personal workspace' : 'Team workspace'} · {ROLE_LABEL[o.workspace.role] || humanize(o.workspace.role)} · agent actions are risk-checked and audited</p>
+        </div>
+        <div className="hero-pills">
+          <Link to="/tasks" className="hero-pill"><Dot tone={running ? 'info' : 'neutral'} live={!!running} />{fmtNumber(running)} running</Link>
+          <Link to="/approvals" className="hero-pill"><Dot tone={waiting ? 'warning' : 'neutral'} live={!!waiting} />{fmtNumber(waiting)} awaiting approval</Link>
+          <Link to="/integrations" className="hero-pill"><Dot tone={connectors.needsAttention ? 'warning' : connectors.connected ? 'success' : 'neutral'} />{fmtNumber(connectors.connected)}/{fmtNumber(connectors.total)} integrations</Link>
+        </div>
+      </section>
+
+      {waiting ? (
+        <Card className="callout card-warning">
+          <span className="callout-icon" aria-hidden="true"><Icon name="approvals" size={18} /></span>
+          <div className="grow">
+            <div className="strong">{fmtNumber(waiting)} action{waiting === 1 ? '' : 's'} waiting for a human decision</div>
+            <div className="small">{o.approvals.oldestWaitMinutes !== null ? `Oldest waiting ${o.approvals.oldestWaitMinutes} min. ` : ''}Agents pause on risky steps until someone with the right role approves or rejects.</div>
+          </div>
+          <Link to="/approvals" className="btn btn-primary">Review approvals</Link>
+        </Card>
+      ) : null}
+
       <div className="stats" aria-label="Key metrics">
-        <Stat testId="stat-agents" label="Active agents" value={activeAgents === null ? '—' : fmtNumber(activeAgents)} hint={agents === null ? 'Agents module not enabled' : `${fmtNumber(agents.length)} total`} />
-        <Stat testId="stat-running" label="Running tasks" value={fmtNumber(running)} hint="Executions + workflow runs" tone={running ? 'info' : undefined} />
-        <Stat testId="stat-approvals" label="Pending approvals" value={fmtNumber(o.approvals ? o.approvals.waiting : 0)} hint={o.approvals && o.approvals.oldestWaitMinutes !== null ? `Oldest waiting ${o.approvals.oldestWaitMinutes} min` : 'Nothing waiting'} tone={o.approvals && o.approvals.waiting ? 'warning' : undefined} />
-        <Stat testId="stat-succeeded" label="Successful executions" value={fmtNumber(ex.byStatus.completed || 0)} hint={`Last ${fmtNumber(ex.sample || 0)} executions`} tone="success" />
-        <Stat testId="stat-failed" label="Failed executions" value={fmtNumber(ex.byStatus.failed || 0)} hint={`Success rate ${fmtPercent(ex.successRate)}`} tone={ex.byStatus.failed ? 'danger' : undefined} />
+        <Stat testId="stat-agents" dot={activeAgents ? 'success' : 'neutral'} label="Active agents" value={activeAgents === null ? '—' : fmtNumber(activeAgents)} hint={agents === null ? 'Agents module not enabled' : `${fmtNumber(agents.length)} total`} />
+        <Stat testId="stat-running" dot={running ? 'info' : 'neutral'} live={!!running} label="Running tasks" value={fmtNumber(running)} hint="Executions + workflow runs" tone={running ? 'info' : undefined} />
+        <Stat testId="stat-approvals" dot={waiting ? 'warning' : 'neutral'} label="Pending approvals" value={fmtNumber(waiting)} hint={o.approvals && o.approvals.oldestWaitMinutes !== null ? `Oldest waiting ${o.approvals.oldestWaitMinutes} min` : 'Nothing waiting'} tone={waiting ? 'warning' : undefined} />
+        <Stat testId="stat-succeeded" dot="success" label="Successful executions" value={fmtNumber(ex.byStatus.completed || 0)} hint={`Last ${fmtNumber(ex.sample || 0)} executions`} tone="success" />
+        <Stat testId="stat-failed" dot={ex.byStatus.failed ? 'danger' : 'neutral'} label="Failed executions" value={fmtNumber(ex.byStatus.failed || 0)} hint={`Success rate ${fmtPercent(ex.successRate)}`} tone={ex.byStatus.failed ? 'danger' : undefined} />
       </div>
 
       {empty ? (
         <Card>
-          <EmptyState title="No activity in this workspace yet" action={<Button variant="primary" onClick={onAsk}>Create your first task</Button>}>
-            Ask Nexus to do something, or start a workflow. Results, evidence and approvals will appear here.
+          <EmptyState icon="spark" title="No activity in this workspace yet" action={<><Button variant="primary" onClick={onAsk}>Create your first task</Button><Link to="/security" className="btn">See how actions are checked</Link></>}>
+            Describe a goal in plain language. Nexus plans the steps, runs the safe ones, pauses risky ones for your approval, and records evidence for each step here.
           </EmptyState>
         </Card>
       ) : null}
@@ -79,7 +106,7 @@ function DashboardBody({ data, onAsk }) {
                 </li>
               ))}
             </ul>
-          ) : <EmptyState title="No tasks yet" />}
+          ) : <EmptyState icon="tasks" title="No tasks yet">Tasks you or your agents start appear here with their live status.</EmptyState>}
         </Card>
 
         <Card title="Workflow runs" actions={<Link to="/workflows" className="link">Workflows</Link>}>
@@ -90,7 +117,7 @@ function DashboardBody({ data, onAsk }) {
               </div>
               <p className="muted small">Success rate {fmtPercent(runs.successRate)} over the last {fmtNumber(runs.sample)} runs.</p>
             </>
-          ) : <EmptyState title="No workflow runs yet" />}
+          ) : <EmptyState icon="workflows" title="No workflow runs yet">Run a saved workflow from the Workflows page.</EmptyState>}
         </Card>
       </div>
 

@@ -19,15 +19,15 @@ export default function Workflows() {
 
   return (
     <>
-      <PageHeader title="Workflows" description="Repeatable multi-step processes. Each step runs as a governed agent task with retries, approvals and evidence." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
+      <PageHeader eyebrow="Operate" title="Workflows" description="Repeatable multi-step processes. Each step runs as a governed agent task with retries, approvals and evidence." actions={<Button size="sm" onClick={res.refresh}>Refresh</Button>} />
       <Resource res={res} loadingLabel="Loading workflows…" errorTitle="Could not load workflows">
         {({ workflows, runs }) => (
           <div className="stack">
             <Card title="Workflows">
               {workflows.length ? (
-                <div className="table-wrap">
+                <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
                   <table className="table">
-                    <thead><tr><th>Name</th><th>Status</th><th>Trigger</th><th>Version</th><th /></tr></thead>
+                    <thead><tr><th>Name</th><th>Status</th><th>Trigger</th><th>Version</th><th><span className="sr-only">Actions</span></th></tr></thead>
                     <tbody>
                       {workflows.map((w) => (
                         <tr key={w.id}>
@@ -49,7 +49,7 @@ export default function Workflows() {
             </Card>
             <Card title="Recent runs">
               {runs.length ? (
-                <div className="table-wrap">
+                <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
                   <table className="table">
                     <thead><tr><th>Workflow</th><th>Status</th><th>Trigger</th><th>Started</th><th>Outcome</th></tr></thead>
                     <tbody>
