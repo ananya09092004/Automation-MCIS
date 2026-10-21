@@ -96,7 +96,13 @@ Layer 9: even if `ALLOW_UNAUTHENTICATED_API=true` is set by mistake, the server
 Apply the migrations in order (each has an idempotent `up` and a `down`):
 `20260923_layer1` → `20260924_layer3` → `20260925_layer2` → `20260926_layer4` →
 `20260927_layer5` → `20260928_layer6` → `20260929_layer7` → `20260930_layer8` →
-`20261001_layer9`. Every Layer 1–9 table has RLS on with no client policies;
+`20261001_layer9` → `20261002_layer10` → `20261003_legacy_tables_rls` →
+`20261004_service_role_table_grants`. If you also run `SUPABASE_SETUP.sql`, run it
+**before** the migrations. Run `20261004` **last**: it grants the backend role
+(`service_role`) access to every table. Supabase projects that do not expose new
+tables to the API roles by default otherwise answer every Layer 1–7 query with
+`42501 permission denied` (seen as "Workspace service error").
+Every Layer 1–9 table has RLS on with no client policies;
 `anon` / `authenticated` have no privileges on them — the backend uses the
 service-role key. Verify with `psql -f scripts/schema-audit.sql` (prints only
 violations). The migrations use only core `gen_random_uuid()`: `pgcrypto` is

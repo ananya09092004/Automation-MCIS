@@ -58,6 +58,12 @@ v as (
       unnest(array['anon','authenticated']) r, unnest(array['SELECT','INSERT','UPDATE','DELETE']) priv
     where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
       and exists (select 1 from pg_roles where rolname = r) and has_table_privilege(r, c.oid, priv)
+  -- 20261004: the backend role must be able to use every public table. Without
+  -- this, projects with no default grants return 42501 → "Workspace service error".
+  union all select c.relname::text, format('service_role lacks %s on table (backend cannot use it)', priv) from pg_class c,
+      unnest(array['SELECT','INSERT','UPDATE','DELETE']) priv
+    where c.relnamespace = 'public'::regnamespace and c.relkind in ('r', 'p')
+      and exists (select 1 from pg_roles where rolname = 'service_role') and not has_table_privilege('service_role', c.oid, priv)
 )
 select name, problem from v order by 1, 2;
 

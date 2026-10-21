@@ -118,7 +118,8 @@ node scripts/check-config.js    # names only, no values printed
 npm start
 npm test                        # 406 tests
 
-# Database (Supabase SQL editor or psql): apply migrations/*.up.sql in date order,
+# Database (Supabase SQL editor or psql): SUPABASE_SETUP.sql first, then
+# migrations/*.up.sql in date order (20261004_service_role_table_grants LAST),
 # then run scripts/schema-audit.sql — expect 0 rows.
 
 # Nexus web console (port 5174, /api proxied to 5051)

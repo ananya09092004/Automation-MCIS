@@ -20,7 +20,8 @@ cd nexus-web    && npm ci && cp .env.example .env.local && npm run dev  # :5174
 ```
 
 Fill in the `.env` files first (names are listed in each `.env.example`; never commit the
-filled-in files). Apply the SQL migrations in `mcis/backend/migrations` in date order.
+filled-in files). Apply the SQL migrations in `mcis/backend/migrations` in date order
+(`20261004_service_role_table_grants` last — see `mcis/backend/docs/PRODUCTION_CONFIG.md`).
 
 ## Docs
 

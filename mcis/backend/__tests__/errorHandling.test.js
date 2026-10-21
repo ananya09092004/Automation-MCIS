@@ -5,6 +5,11 @@
  */
 'use strict';
 
+// The default /api/workspaces router (as mounted by server.js) is loaded below with
+// an unreachable database, so its unexpected-error path can be exercised for real.
+process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:9';
+process.env.SUPABASE_KEY = process.env.SUPABASE_KEY || 'unused';
+
 const assert = require('assert');
 const http = require('http');
 const express = require('express');
@@ -88,6 +93,43 @@ function call(server, { method = 'GET', path, headers = {}, body }) {
     await call(server, { path: '/api/ok', headers: { Origin: 'https://evil.example' } });
     await call(server, { method: 'POST', path: '/api/echo', headers: { 'Content-Type': 'application/json' }, body: '{' });
     assert.strictEqual(logs.filter(([l]) => l === 'error').length, errorsBefore);
+  });
+
+  // Production incident: GET /api/workspaces returned "Workspace service error" (500)
+  // and nothing was logged, because the router was created without a logger.
+  await test('workspace router logs the database error code + message, response stays generic', async () => {
+    const { createWorkspacesRouter } = require('../routes/workspaces');
+    const lines = [];
+    const failing = { listWorkspaces: async () => { const e = new Error('permission denied for table workspaces'); e.code = '42501'; throw e; } };
+    const wsApp = express();
+    wsApp.use((req, res, next) => { req.user = { uid: 'u1' }; next(); });
+    wsApp.use('/api/workspaces', createWorkspacesRouter({ service: failing, logger: { error: (m) => lines.push(m) } }));
+    const s2 = wsApp.listen(0, '127.0.0.1');
+    await new Promise((r) => s2.once('listening', r));
+    try {
+      const r = await call(s2, { path: '/api/workspaces' });
+      assert.strictEqual(r.status, 500);
+      assert.strictEqual(r.json.error, 'Workspace service error');
+      assert.ok(!r.text.includes('permission denied'), 'internal detail never sent to the client');
+      assert.deepStrictEqual(lines, ['Workspace error: [42501] permission denied for table workspaces']);
+    } finally { s2.close(); }
+  });
+
+  await test('the router server.js mounts logs unexpected errors (it used to be created without a logger)', async () => {
+    const mounted = require('../routes/workspaces'); // default export, unreachable database
+    const original = console.error;
+    const seen = [];
+    console.error = (...a) => { seen.push(a.join(' ')); };
+    const wsApp = express();
+    wsApp.use((req, res, next) => { req.user = { uid: 'u1' }; next(); });
+    wsApp.use('/api/workspaces', mounted);
+    const s3 = wsApp.listen(0, '127.0.0.1');
+    await new Promise((r) => s3.once('listening', r));
+    try {
+      const r = await call(s3, { path: '/api/workspaces' });
+      assert.strictEqual(r.status, 500);
+      assert.ok(seen.some((l) => l.startsWith('Workspace error:')), `expected a "Workspace error:" log line, got ${JSON.stringify(seen)}`);
+    } finally { console.error = original; s3.close(); }
   });
 
   server.close();

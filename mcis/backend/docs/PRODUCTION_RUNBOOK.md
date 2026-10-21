@@ -45,7 +45,11 @@ Apply with `psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/<file>.up.sql`
 psql "$DATABASE_URL" -f scripts/schema-audit.sql   # prints ONLY violations
 ```
 
-It checks that every Layer 1–9 table exists with RLS on, that `anon` /
+Run `migrations/20261004_service_role_table_grants.up.sql` **last** (after
+`SUPABASE_SETUP.sql` and every other migration); re-running it is harmless.
+
+It checks that `service_role` (the backend) can use every public table, that
+every Layer 1–9 table exists with RLS on, that `anon` /
 `authenticated` hold no table privileges or policies, that workspace-owned
 tables have a NOT NULL `workspace_id` covered by a foreign key and an index,
 and that no Layer 1–9 RPC is executable by `public`/`anon`/`authenticated`.
