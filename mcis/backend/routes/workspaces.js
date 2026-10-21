@@ -92,5 +92,6 @@ function createWorkspacesRouter({ service, logger } = {}) {
   return router;
 }
 
-module.exports = createWorkspacesRouter();
+// console: Render captures stdout. Without a logger, unexpected (database) errors were never logged.
+module.exports = createWorkspacesRouter({ logger: console });
 module.exports.createWorkspacesRouter = createWorkspacesRouter;

@@ -36,7 +36,7 @@ function sendWorkspaceError(res, err, logger) {
   if (err instanceof WorkspaceError) {
     return res.status(err.status).json({ success: false, error: err.message, code: err.code });
   }
-  if (logger) logger.error(`Workspace error: ${err && err.message}`);
+  if (logger) logger.error(`Workspace error: ${err && err.code ? `[${err.code}] ` : ''}${err && err.message}`);
   return res.status(500).json({ success: false, error: 'Workspace service error' });
 }
 
