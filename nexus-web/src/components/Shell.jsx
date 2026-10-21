@@ -17,6 +17,9 @@ export const NAV_GROUPS = [
     { to: '/workflows', label: 'Workflows', icon: 'workflows' },
     { to: '/approvals', label: 'Approvals', icon: 'approvals' },
   ] },
+  { label: 'Intelligence', items: [
+    { to: '/compare', label: 'Compare', icon: 'compare' },
+  ] },
   { label: 'Govern', items: [
     { to: '/security', label: 'Agent Firewall', icon: 'firewall' },
     { to: '/activity', label: 'Activity', icon: 'activity' },

@@ -358,6 +358,36 @@ a.hero-pill:hover { background: rgba(255, 255, 255, 0.1); }
 .stop-card { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .stop-card.on { border-color: #f6cfca; background: var(--danger-soft); }
 
+/* ---------- compare ---------- */
+.cmp-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.cmp-pick { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--surface); font: inherit; cursor: pointer; text-align: left; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; }
+.cmp-pick:hover:not(:disabled) { border-color: #b7bed1; }
+.cmp-pick.on { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); background: var(--primary-soft); }
+.cmp-pick:disabled { opacity: 0.5; cursor: not-allowed; }
+.cmp-pick:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.cmp-pick-name { font-weight: 620; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.cmp-table { table-layout: fixed; min-width: 640px; }
+.cmp-table thead th:first-child, .cmp-table tbody th[scope="row"] { width: 160px; }
+.cmp-table tbody th[scope="row"] { text-align: left; font-weight: 560; color: var(--muted); padding: 11px 20px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.cmp-table td { position: relative; overflow-wrap: anywhere; }
+.cmp-table thead th { white-space: normal; vertical-align: bottom; font-family: inherit; text-transform: none; letter-spacing: 0; font-size: 12.5px; }
+.cmp-table tbody th[scope="row"] { font-family: inherit; text-transform: none; letter-spacing: 0; font-size: 13px; background: transparent; white-space: normal; }
+.cmp-col-head { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; text-transform: none; letter-spacing: 0; font-family: inherit; }
+.cmp-col-name { font-size: 13.5px; font-weight: 650; color: var(--text); overflow-wrap: anywhere; }
+.cmp-section th { background: var(--surface-2); font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); padding: 7px 20px; text-align: left; border-bottom: 1px solid var(--border); }
+.cmp-missing { color: var(--muted); font-style: italic; font-size: 12.5px; }
+.cmp-stale { color: var(--muted); }
+.cmp-best { background: var(--success-soft); }
+.cmp-best-tag { margin-left: 8px; font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--success); }
+.cmp-score { font-size: 22px; font-weight: 720; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.cmp-actions { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.cmp-actions .row { margin-top: 4px; }
+.cmp-criteria { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.cmp-criterion { display: grid; grid-template-columns: 120px 1fr 40px; gap: 12px; align-items: center; }
+.cmp-criterion input[type=range] { padding: 0; border: 0; box-shadow: none; accent-color: var(--primary); }
+.cmp-consent { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); margin: 6px 0 10px; font-size: 13px; }
+.cmp-consent input { width: auto; margin-top: 3px; }
+
 /* ---------- modal & toasts ---------- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(6, 10, 19, 0.5); backdrop-filter: blur(2px); display: grid; place-items: center; padding: 16px; z-index: 50; animation: fade-in 0.15s ease; }
 .modal { background: var(--surface); border-radius: 16px; width: min(560px, 100%); box-shadow: var(--shadow-lg); max-height: calc(100vh - 32px); display: flex; flex-direction: column; animation: pop-in 0.2s var(--ease); border: 1px solid var(--border); }

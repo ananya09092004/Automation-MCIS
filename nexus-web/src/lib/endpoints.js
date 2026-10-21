@@ -46,6 +46,15 @@ export const endpoints = {
 
   // Integrations (Layer 5)
   listIntegrations: (api, w) => api.request(`${ws(w)}/integrations`),
+  createIntegration: (api, w, body) => post(api, `${ws(w)}/integrations`, body),
+  updateIntegration: (api, w, id, body) => api.request(`${ws(w)}/integrations/${enc(id)}`, { method: 'PATCH', body }),
+
+  // Product monitoring (Layer 10) — the data behind Compare
+  listProductMonitors: (api, w) => api.request(`${ws(w)}/monitoring/monitors?kind=product&limit=200`),
+  getMonitor: (api, w, id) => api.request(`${ws(w)}/monitoring/monitors/${enc(id)}`),
+  createMonitor: (api, w, body) => post(api, `${ws(w)}/monitoring/monitors`, body),
+  checkMonitor: (api, w, id, key = newIdempotencyKey()) => post(api, `${ws(w)}/monitoring/monitors/${enc(id)}/check`, {}, { 'Idempotency-Key': key }),
+  deleteMonitor: (api, w, id) => api.request(`${ws(w)}/monitoring/monitors/${enc(id)}`, { method: 'DELETE' }),
   checkIntegrationHealth: (api, w, id) => post(api, `${ws(w)}/integrations/${enc(id)}/health`),
 
   // Activity (Layer 2 audit + Layer 6 security events; admin only)
