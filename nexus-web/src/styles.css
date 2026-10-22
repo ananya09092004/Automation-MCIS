@@ -358,6 +358,30 @@ a.hero-pill:hover { background: rgba(255, 255, 255, 0.1); }
 .stop-card { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .stop-card.on { border-color: #f6cfca; background: var(--danger-soft); }
 
+/* ---------- charts & insights ---------- */
+.chart { margin: 0; }
+.chart-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; margin-bottom: 10px; }
+.chart-wrap { position: relative; }
+.chart-wrap svg { width: 100%; height: 180px; display: block; overflow: visible; }
+.chart-grid { stroke: var(--border); stroke-width: 1; }
+.chart-base { stroke: var(--border-strong); stroke-width: 1; }
+.chart-tick { font-size: 10px; fill: var(--muted); font-family: var(--mono); }
+.chart-bar { fill: var(--primary); transition: opacity 0.12s; }
+.chart-wrap svg:hover .chart-bar:not(.is-hover) { opacity: 0.55; }
+.chart-tip { position: absolute; top: 0; transform: translate(-50%, -6px); background: var(--ink-900); color: #e8ecf7; border-radius: 8px; padding: 6px 9px; display: flex; flex-direction: column; gap: 1px; pointer-events: none; box-shadow: var(--shadow-lg); font-size: 12.5px; white-space: nowrap; z-index: 2; }
+.chart-tip .muted { color: #9aa6c4; }
+.seg-inline { width: auto; }
+.seg-inline button { flex: none; padding: 6px 12px; }
+.plans { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-top: 4px; }
+.plan { border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 8px; background: var(--surface); }
+.plan.is-current { border-color: var(--primary); box-shadow: 0 0 0 3px var(--primary-ring); }
+.plan-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.plan-head h3 { font-size: 16px; }
+.plan-limits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; }
+.plan-limits li { display: flex; justify-content: space-between; gap: 8px; color: var(--text-2); }
+.plan-limits strong { font-variant-numeric: tabular-nums; }
+.plan-cta { margin-top: auto; padding-top: 6px; }
+
 /* ---------- task lifecycle ---------- */
 .lifecycle-card { margin-bottom: 18px; }
 .lifecycle { list-style: none; margin: 0 0 10px; padding: 0; display: flex; gap: 0; flex-wrap: wrap; }

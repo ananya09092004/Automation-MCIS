@@ -19,6 +19,7 @@ export const NAV_GROUPS = [
   ] },
   { label: 'Intelligence', items: [
     { to: '/compare', label: 'Compare', icon: 'compare' },
+    { to: '/insights', label: 'Insights', icon: 'chart' },
   ] },
   { label: 'Govern', items: [
     { to: '/security', label: 'Agent Firewall', icon: 'firewall' },

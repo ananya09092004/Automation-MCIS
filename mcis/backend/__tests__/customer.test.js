@@ -622,7 +622,12 @@ async function run() {
     const adminView = (await call('GET', B(bws), { as: U.alice })).body.data.paymentStatus;
     assert.deepStrictEqual([adminView.checkoutAvailable, adminView.canManage], [true, true]);
     const plans = (await call('GET', `${B(bws)}/plans`, { as: U.bob })).body.data;
-    assert.deepStrictEqual(plans.map((p) => [p.id, p.purchasable]), [['free', false], ['pro', true], ['business', true], ['enterprise', false]]);
+    // Built-in plans keep their exact flags; any further catalogue plan (e.g. 'starter',
+    // migration 20261005) is purchasable only when its STRIPE_PRICE_<PLAN> is configured.
+    const builtIn = ['free', 'pro', 'business', 'enterprise'];
+    assert.deepStrictEqual(plans.filter((p) => builtIn.includes(p.id)).map((p) => [p.id, p.purchasable]), [['free', false], ['pro', true], ['business', true], ['enterprise', false]]);
+    assert.strictEqual(plans[0].id, 'free');
+    for (const extra of plans.filter((p) => !builtIn.includes(p.id))) assert.strictEqual(extra.purchasable, false, `${extra.id} has no STRIPE_PRICE_ configured in this test`);
     assert.ok(plans.find((p) => p.id === 'enterprise').features.manual_activation === true);
     const ent1 = await call('POST', `${B(bws)}/subscription/checkout`, { as: U.owen, body: { planId: 'enterprise' } });
     assert.deepStrictEqual([ent1.status, ent1.body.code], [400, 'PLAN_NOT_PURCHASABLE'], 'no fake enterprise checkout');

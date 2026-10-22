@@ -73,4 +73,8 @@ export const endpoints = {
   // Usage & billing (Layer 7/8)
   billingSummary: (api, w) => api.request(`${ws(w)}/billing`),
   billingPlans: (api, w) => api.request(`${ws(w)}/billing/plans`),
+  billingDashboard: (api, w, days = 30) => api.request(`${ws(w)}/billing/dashboard?days=${enc(days)}`),
+  billingCheckout: (api, w, planId) => post(api, `${ws(w)}/billing/subscription/checkout`, { planId }),
+  billingPortal: (api, w) => post(api, `${ws(w)}/billing/subscription/portal`),
+  billingCancel: (api, w) => post(api, `${ws(w)}/billing/subscription/cancel`),
 };

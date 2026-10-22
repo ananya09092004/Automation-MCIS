@@ -1,4 +1,8 @@
-import { Badge, Card, EmptyState, Notice, PageHeader, Resource } from '../components/ui.jsx';
+import { useState } from 'react';
+import { Badge, Button, Card, EmptyState, Notice, PageHeader, Resource } from '../components/ui.jsx';
+import { useToast } from '../lib/toast.jsx';
+import { safeHref } from '../lib/compare.js';
+import { redirectTo } from '../lib/redirect.js';
 import { useApi } from '../lib/apiContext.jsx';
 import { useWorkspace } from '../lib/workspace.jsx';
 import { useResource } from '../lib/useResource.js';
@@ -14,18 +18,19 @@ export default function Billing() {
   const api = useApi();
   const { workspaceId } = useWorkspace();
   const res = useResource(async () => {
-    const [summary, overview] = await Promise.all([
+    const [summary, overview, plans] = await Promise.all([
       endpoints.billingSummary(api, workspaceId),
       endpoints.overview(api, workspaceId).catch(() => null),
+      endpoints.billingPlans(api, workspaceId).catch(() => []),
     ]);
-    return { summary, usage: overview ? overview.usage : null };
+    return { summary, usage: overview ? overview.usage : null, plans };
   }, [api, workspaceId]);
 
   return (
     <>
       <PageHeader eyebrow="Workspace" title="Usage & Billing" description="Plan, limits and metered usage for this workspace, as recorded by the server." />
       <Resource res={res} loadingLabel="Loading billing…" errorTitle="Could not load billing">
-        {({ summary: s, usage }) => (
+        {({ summary: s, usage, plans }) => (
           <div className="stack">
             <div className="grid-3">
               <Card title="Plan">
@@ -55,6 +60,7 @@ export default function Billing() {
                 )}
               </Card>
             </div>
+            <Plans plans={plans} summary={s} onChanged={res.refresh} />
             <Card title="Metered usage this period">
               {s.meters && s.meters.length ? (
                 <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
@@ -96,5 +102,78 @@ export default function Billing() {
         )}
       </Resource>
     </>
+  );
+}
+
+const LIMIT_ROWS = [
+  ['executions_per_month', 'Agent executions / month'],
+  ['workflow_runs_per_month', 'Workflow runs / month'],
+  ['max_members', 'Team members'],
+  ['max_integrations', 'Integrations'],
+  ['max_monitored_products', 'Compared / monitored products'],
+  ['usage_retention_days', 'Usage history (days)'],
+];
+const SUPPORT = { community: 'Community', email: 'Email', priority_email: 'Priority email', dedicated: 'Dedicated' };
+
+/** Plan catalogue from the server. Purchase is offered only when the server says it is possible. */
+function Plans({ plans, summary: s, onChanged }) {
+  const api = useApi();
+  const { workspaceId, isAdmin } = useWorkspace();
+  const toast = useToast();
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const ps = s.paymentStatus || {};
+  const current = s.plan ? s.plan.id : null;
+  if (!plans || !plans.length) return null;
+
+  async function go(kind, fn) {
+    setBusy(kind); setError(null);
+    try {
+      const r = await fn();
+      const href = r && safeHref(r.url);
+      if (href && href.startsWith('https://')) { redirectTo(href); return; }
+      if (r && r.status === 'cancel_requested') { toast.success('Your plan will end at the close of the current period'); await onChanged(); }
+    } catch (err) { setError(err.message); }
+    setBusy(null);
+  }
+
+  return (
+    <Card title="Plans" actions={ps.portalAvailable ? <Button size="sm" busy={busy === 'portal'} onClick={() => go('portal', () => endpoints.billingPortal(api, workspaceId))}>Manage subscription</Button> : null}>
+      {!ps.configured ? <p className="small muted">Online purchase is not available on this deployment yet. Plans are activated by the Nexus team; limits below are what each plan enforces.</p> : null}
+      {error ? <Notice tone="danger">{error}</Notice> : null}
+      <div className="plans">
+        {plans.map((p) => {
+          const isCurrent = p.id === current;
+          const f = p.features || {};
+          return (
+            <section key={p.id} className={`plan ${isCurrent ? 'is-current' : ''}`} aria-label={`${p.name} plan`}>
+              <div className="plan-head">
+                <h3>{p.name}</h3>
+                {isCurrent ? <Badge status="active">Current</Badge> : null}
+              </div>
+              {p.description ? <p className="small muted">{p.description}</p> : null}
+              <ul className="plan-limits">
+                {LIMIT_ROWS.filter(([k]) => k in (p.limits || {})).map(([k, label]) => (
+                  <li key={k}><span>{label}</span><strong>{p.limits[k] === null ? 'Unlimited' : fmtNumber(p.limits[k])}</strong></li>
+                ))}
+                {f.support ? <li><span>Support</span><strong>{SUPPORT[f.support] || humanize(f.support)}</strong></li> : null}
+              </ul>
+              <div className="plan-cta">
+                {isCurrent ? <span className="small muted">Your workspace is on this plan.</span>
+                  : p.purchasable && ps.checkoutAvailable && isAdmin
+                    ? <Button variant="primary" className="full" busy={busy === p.id} disabled={!!busy} onClick={() => go(p.id, () => endpoints.billingCheckout(api, workspaceId, p.id))}>Choose {p.name}</Button>
+                    : <span className="small muted">{f.manual_activation ? 'Arranged with the Nexus team.' : !ps.configured ? 'Activated by the Nexus team.' : !isAdmin ? 'Owners and admins change plans.' : 'Not available online.'}</span>}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      {ps.cancelAvailable ? (
+        <div className="row"><Button size="sm" variant="ghost" busy={busy === 'cancel'} onClick={() => {
+          if (typeof window !== 'undefined' && window.confirm && !window.confirm('Cancel your subscription at the end of the current period?')) return;
+          go('cancel', () => endpoints.billingCancel(api, workspaceId));
+        }}>Cancel subscription</Button></div>
+      ) : null}
+    </Card>
   );
 }
