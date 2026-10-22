@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Badge, Button, Card, EmptyState, ErrorState, Loading, Notice, PageHeader, Resource } from '../components/ui.jsx';
 import AskNexusDialog from '../components/AskNexusDialog.jsx';
 import { useApi } from '../lib/apiContext.jsx';
@@ -7,14 +7,24 @@ import { useResource } from '../lib/useResource.js';
 import { useToast } from '../lib/toast.jsx';
 import { endpoints } from '../lib/endpoints.js';
 import { Link } from '../lib/router.jsx';
-import { ACTIVE_EXECUTION, fmtDate, humanize, timeAgo } from '../lib/format.js';
+import { ACTIVE_EXECUTION, fmtDate, humanize, taskState, timeAgo } from '../lib/format.js';
+import Lifecycle from '../components/Lifecycle.jsx';
+
+/** Re-read silently while work is in flight; stops when nothing is active or the tab is hidden. */
+function useLiveRefresh(active, refresh, ms) {
+  useEffect(() => {
+    if (!active) return undefined;
+    const t = setInterval(() => { if (typeof document === 'undefined' || !document.hidden) refresh(); }, ms);
+    return () => clearInterval(t);
+  }, [active, refresh, ms]);
+}
 
 const FILTERS = [
   { id: 'all', label: 'All' },
-  { id: 'active', label: 'Running', match: (s) => ACTIVE_EXECUTION.includes(s) && s !== 'waiting_approval' },
-  { id: 'waiting_approval', label: 'Needs approval', match: (s) => s === 'waiting_approval' },
+  { id: 'active', label: 'Queued & running', match: (s) => ACTIVE_EXECUTION.includes(s) && s !== 'waiting_approval' },
+  { id: 'waiting_approval', label: 'Awaiting approval', match: (s) => s === 'waiting_approval' },
   { id: 'completed', label: 'Completed', match: (s) => s === 'completed' },
-  { id: 'failed', label: 'Failed', match: (s) => s === 'failed' || s === 'cancelled' },
+  { id: 'failed', label: 'Failed or cancelled', match: (s) => s === 'failed' || s === 'cancelled' },
 ];
 
 export default function Tasks() {
@@ -23,6 +33,8 @@ export default function Tasks() {
   const res = useResource(() => endpoints.listExecutions(api, workspaceId, 100), [api, workspaceId]);
   const [filter, setFilter] = useState('all');
   const [asking, setAsking] = useState(false);
+  const anyActive = !!(res.data && res.data.some((r) => ACTIVE_EXECUTION.includes(r.status)));
+  useLiveRefresh(anyActive, res.refresh, 10000);
 
   return (
     <>
@@ -59,7 +71,7 @@ function TaskTable({ rows, filter, onAsk }) {
           {shown.map((e) => (
             <tr key={e.id}>
               <td><Link to={`/tasks/${e.id}`} className="link strong">{e.goal || 'Untitled task'}</Link>{e.failure ? <div className="small text-danger">{e.failure.message || e.failure.code}</div> : null}</td>
-              <td><Badge status={e.status} /></td>
+              <td><Badge status={e.status}>{taskState(e.status)}</Badge></td>
               <td className="muted">{e.progress ? `${e.progress.stepsExecuted || 0} / ${e.progress.maxSteps} steps` : '—'}</td>
               <td className="muted" title={fmtDate(e.createdAt)}>{timeAgo(e.createdAt)}</td>
             </tr>
@@ -83,6 +95,8 @@ export function TaskDetail({ id }) {
   }, [api, workspaceId, id]);
   const [busy, setBusy] = useState(null);
   const [actionError, setActionError] = useState(null);
+  const live = !!(res.data && ACTIVE_EXECUTION.includes(res.data.execution.status));
+  useLiveRefresh(live, res.refresh, 4000);
 
   async function act(kind, fn, okText) {
     setBusy(kind);
@@ -104,11 +118,19 @@ export function TaskDetail({ id }) {
         title={e.goal || 'Task'}
         description={<>Started {fmtDate(e.createdAt)}{e.finishedAt ? ` · finished ${fmtDate(e.finishedAt)}` : ''}</>}
         actions={<>
-          <Badge status={e.status} />
+          <Badge status={e.status}>{taskState(e.status)}</Badge>
           <Button size="sm" onClick={res.refresh}>Refresh</Button>
           {active ? <Button size="sm" variant="danger" busy={busy === 'cancel'} onClick={() => act('cancel', () => endpoints.cancelExecution(api, workspaceId, e.id), 'Cancellation requested')}>Cancel task</Button> : null}
         </>}
       />
+      <Card className="lifecycle-card">
+        <Lifecycle status={e.status} hadApproval={!!appr || !!(evidence && evidence.approvals && evidence.approvals.length)} />
+        <p className="small muted" role="status" aria-live="polite">
+          {live ? 'Live — this page updates every few seconds while the task runs.' : `${taskState(e.status)}${e.finishedAt ? ` ${timeAgo(e.finishedAt)}` : ''}.`}
+          {e.status === 'completed' && e.verification ? ` Result verification: ${humanize(e.verification.status)}.` : ''}
+          {e.status === 'completed' && !e.verification ? ' The agent reported completion; no independent verification was recorded.' : ''}
+        </p>
+      </Card>
       {actionError ? <Notice tone="danger">{actionError}</Notice> : null}
       {appr && appr.status === 'pending' ? (
         <Card title="Approval required" className="card-warning">

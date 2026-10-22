@@ -48,3 +48,10 @@ export function fmtDuration(ms) {
 
 export const ACTIVE_EXECUTION = ['created', 'planning', 'executing', 'verifying', 'waiting_approval'];
 export const ROLE_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+
+/** User-facing task (execution) states. Backend statuses are mapped, never invented. */
+export const TASK_STATE = {
+  created: 'Queued', planning: 'Planning', executing: 'Running', verifying: 'Verifying',
+  waiting_approval: 'Awaiting approval', completed: 'Completed', failed: 'Failed', cancelled: 'Cancelled',
+};
+export const taskState = (s) => TASK_STATE[s] || humanize(s);

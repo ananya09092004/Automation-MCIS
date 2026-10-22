@@ -358,6 +358,22 @@ a.hero-pill:hover { background: rgba(255, 255, 255, 0.1); }
 .stop-card { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 .stop-card.on { border-color: #f6cfca; background: var(--danger-soft); }
 
+/* ---------- task lifecycle ---------- */
+.lifecycle-card { margin-bottom: 18px; }
+.lifecycle { list-style: none; margin: 0 0 10px; padding: 0; display: flex; gap: 0; flex-wrap: wrap; }
+.lc-step { flex: 1; min-width: 90px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; position: relative; padding-right: 8px; }
+.lc-step::before { content: ""; position: absolute; top: 6px; left: 14px; right: 0; height: 2px; background: var(--border); }
+.lc-step:last-child::before { display: none; }
+.lc-done::before { background: var(--primary); }
+.lc-dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--border-strong); background: var(--surface); position: relative; z-index: 1; }
+.lc-done .lc-dot { background: var(--primary); border-color: var(--primary); }
+.lc-current .lc-dot { border-color: var(--primary); box-shadow: 0 0 0 4px var(--primary-ring); animation: pulse-ring 1.8s var(--ease) infinite; }
+.is-failed .lc-current .lc-dot { border-color: var(--danger-dot); background: var(--danger-dot); box-shadow: none; animation: none; }
+.is-cancelled .lc-current .lc-dot { border-color: var(--neutral-dot); background: var(--neutral-dot); box-shadow: none; animation: none; }
+.lc-label { font-size: 12.5px; font-weight: 600; color: var(--muted); }
+.lc-done .lc-label, .lc-current .lc-label { color: var(--text); }
+@keyframes pulse-ring { 50% { box-shadow: 0 0 0 7px transparent; } }
+
 /* ---------- compare ---------- */
 .cmp-picker { display: flex; flex-wrap: wrap; gap: 8px; }
 .cmp-pick { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--border-strong); background: var(--surface); font: inherit; cursor: pointer; text-align: left; transition: border-color 0.15s, box-shadow 0.15s, background 0.15s; }
@@ -461,7 +477,7 @@ a.hero-pill:hover { background: rgba(255, 255, 255, 0.1); }
 /* ---------- motion preferences ---------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; scroll-behavior: auto !important; }
-  .lane-wire::after, .flow-link, .dot.live, .badge-info::before, .sk { animation: none !important; }
+  .lane-wire::after, .flow-link, .dot.live, .badge-info::before, .sk, .lc-current .lc-dot { animation: none !important; }
   .spinner { animation: spin 1.6s linear infinite !important; }
 }
 

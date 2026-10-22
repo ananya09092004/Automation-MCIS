@@ -7,7 +7,7 @@ import { useWorkspace } from '../lib/workspace.jsx';
 import { useResource } from '../lib/useResource.js';
 import { endpoints } from '../lib/endpoints.js';
 import { Link } from '../lib/router.jsx';
-import { fmtDuration, fmtNumber, fmtPercent, humanize, timeAgo, ROLE_LABEL } from '../lib/format.js';
+import { fmtDuration, fmtNumber, fmtPercent, humanize, taskState, timeAgo, ROLE_LABEL } from '../lib/format.js';
 
 const RUNNING = ['created', 'planning', 'executing', 'verifying'];
 
@@ -102,7 +102,7 @@ function DashboardBody({ data, onAsk }) {
                 <li key={e.id} className="list-row">
                   <Link to={`/tasks/${e.id}`} className="list-main">{e.goal || 'Untitled task'}</Link>
                   <span className="muted small">{timeAgo(e.createdAt)}</span>
-                  <Badge status={e.status} />
+                  <Badge status={e.status}>{taskState(e.status)}</Badge>
                 </li>
               ))}
             </ul>
