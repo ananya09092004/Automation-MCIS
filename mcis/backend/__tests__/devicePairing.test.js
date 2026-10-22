@@ -9,6 +9,7 @@
 
 process.env.SUPABASE_URL = process.env.SUPABASE_URL || 'http://127.0.0.1:9';
 process.env.SUPABASE_KEY = process.env.SUPABASE_KEY || 'unused';
+process.env.AGENT_HEARTBEAT_MS = '120'; // fast heartbeat for the presence tests
 
 const assert = require('assert');
 const http = require('http');
@@ -124,6 +125,47 @@ function call(server, method, path, { uid, body } = {}) {
     for (let i = 0; i < 100 && !done; i++) { done = agentSocket.disconnectAgent('bob', 'PC-9'); if (!done) await new Promise((r) => setTimeout(r, 10)); }
     assert.ok(done, 'connection was registered and then closed');
     assert.strictEqual(await closed, 4003);
+    srv.close();
+  });
+
+  await test('presence: a connected device is listed online (own devices only), offline after it disconnects', async () => {
+    const WebSocket = require('ws');
+    const srv = http.createServer();
+    agentSocket.attachAgentSocket(srv);
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    fake.tables.device_tokens.push({ id: 'p1', user_id: 'carol', device_id: 'DESK-1', token: 'tok-desk1', created_at: new Date().toISOString() });
+    fake.tables.device_tokens.push({ id: 'p2', user_id: 'carol', device_id: 'DESK-2', token: 'tok-desk2', created_at: new Date().toISOString() });
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.address().port}/agent`, { headers: { 'x-device-id': 'DESK-1', 'x-auth-token': 'tok-desk1' } });
+    await new Promise((r) => ws.on('open', r));
+    let p = {};
+    for (let i = 0; i < 100 && !(p['DESK-1'] && p['DESK-1'].online); i++) { p = agentSocket.agentPresence('carol'); await new Promise((r) => setTimeout(r, 10)); }
+    assert.strictEqual(p['DESK-1'].online, true);
+    assert.ok(p['DESK-1'].connectedAt && p['DESK-1'].lastSeenAt);
+    assert.deepStrictEqual(agentSocket.agentPresence('mallory'), {}, 'another user sees nothing');
+    const list = await call(server, 'GET', '/api/device/list', { uid: 'carol' });
+    const byId = Object.fromEntries(list.body.devices.map((d) => [d.device_id, d]));
+    assert.strictEqual(byId['DESK-1'].online, true);
+    assert.strictEqual(byId['DESK-2'].online, false, 'never connected → offline');
+    assert.ok(!('token' in byId['DESK-1']), 'tokens are never listed');
+    const closed = new Promise((r) => ws.on('close', r));
+    ws.close(); await closed;
+    for (let i = 0; i < 100 && agentSocket.agentPresence('carol')['DESK-1'].online; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.strictEqual(agentSocket.agentPresence('carol')['DESK-1'].online, false);
+    srv.close();
+  });
+
+  await test('heartbeat: an agent that stops answering pings is disconnected and shown offline', async () => {
+    const WebSocket = require('ws');
+    const srv = http.createServer();
+    agentSocket.attachAgentSocket(srv);
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    fake.tables.device_tokens.push({ id: 'p3', user_id: 'dave', device_id: 'HUNG-1', token: 'tok-hung', created_at: new Date().toISOString() });
+    const ws = new WebSocket(`ws://127.0.0.1:${srv.address().port}/agent`, { headers: { 'x-device-id': 'HUNG-1', 'x-auth-token': 'tok-hung' }, autoPong: false });
+    const closed = new Promise((r) => ws.on('close', (code) => r(code)));
+    await new Promise((r) => ws.on('open', r));
+    await closed; // terminated after an unanswered ping (heartbeat 120 ms in this test)
+    for (let i = 0; i < 100 && (agentSocket.agentPresence('dave')['HUNG-1'] || {}).online; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.strictEqual(agentSocket.agentPresence('dave')['HUNG-1'].online, false);
     srv.close();
   });
 

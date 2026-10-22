@@ -6,6 +6,9 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 
 const connectedAgents = new Map(); // `${userId}:${deviceId}` -> ws connection
 const pendingCommands = new Map(); // commandId -> resolve callback
+// Presence (per backend instance): when each device connected and was last heard from.
+const presence = new Map(); // `${userId}:${deviceId}` -> { connectedAt, lastSeenAt }
+const HEARTBEAT_MS = Number(process.env.AGENT_HEARTBEAT_MS) || 30000;
 
 // Run this SQL once in Supabase to create the device_tokens table:
 // create table device_tokens (
@@ -19,6 +22,19 @@ const pendingCommands = new Map(); // commandId -> resolve callback
 
 function attachAgentSocket(httpServer) {
   const wss = new WebSocket.Server({ server: httpServer, path: '/agent' });
+
+  // Heartbeat: WebSocket ping every HEARTBEAT_MS; a connection that did not answer
+  // the previous ping is terminated, so "online" never outlives a dead socket.
+  // (Standard ws clients answer pings automatically — no agent change needed.)
+  const beat = setInterval(() => {
+    for (const ws of wss.clients) {
+      if (ws.isAlive === false) { try { ws.terminate(); } catch { /* gone */ } continue; }
+      ws.isAlive = false;
+      try { ws.ping(); } catch { /* closing */ }
+    }
+  }, HEARTBEAT_MS);
+  if (beat.unref) beat.unref();
+  wss.on('close', () => clearInterval(beat));
 
   wss.on('connection', async (ws, req) => {
     const deviceId = req.headers['x-device-id'];
@@ -47,9 +63,15 @@ function attachAgentSocket(httpServer) {
     connectedAgents.set(key, ws);
     ws.userId = userId;
     ws.deviceId = deviceId;
+    ws.isAlive = true;
+    const now = new Date().toISOString();
+    presence.set(key, { connectedAt: now, lastSeenAt: now });
+    const seen = () => { ws.isAlive = true; const p = presence.get(key); if (p && connectedAgents.get(key) === ws) p.lastSeenAt = new Date().toISOString(); };
+    ws.on('pong', seen);
     logger.info(`Agent connected: ${key}`);
 
     ws.on('message', (raw) => {
+      seen();
       let msg;
       try {
         msg = JSON.parse(raw);
@@ -64,7 +86,12 @@ function attachAgentSocket(httpServer) {
     });
 
     ws.on('close', () => {
-      connectedAgents.delete(key);
+      // A newer connection for the same device may have replaced this one.
+      if (connectedAgents.get(key) === ws) {
+        connectedAgents.delete(key);
+        const p = presence.get(key);
+        if (p) presence.set(key, { connectedAt: null, lastSeenAt: p.lastSeenAt });
+      }
       logger.info(`Agent disconnected: ${key}`);
     });
   });
@@ -98,10 +125,27 @@ function sendCommandToAgent(userId, deviceId, action, payload, timeoutMs = 15000
 function disconnectAgent(userId, deviceId) {
   const key = `${userId}:${deviceId}`;
   const agentWs = connectedAgents.get(key);
+  presence.delete(key);
   if (!agentWs) return false;
   connectedAgents.delete(key);
   try { agentWs.close(4003, 'Device revoked'); } catch { /* already closed */ }
   return true;
 }
 
-module.exports = { attachAgentSocket, sendCommandToAgent, disconnectAgent };
+/**
+ * Presence of a user's devices on THIS backend instance:
+ * { [deviceId]: { online, connectedAt, lastSeenAt } }. Only the caller's own
+ * devices (keyed by userId) are ever returned.
+ */
+function agentPresence(userId) {
+  const out = {};
+  const prefix = `${userId}:`;
+  for (const [key, p] of presence) {
+    if (!key.startsWith(prefix)) continue;
+    const ws = connectedAgents.get(key);
+    out[key.slice(prefix.length)] = { online: !!(ws && ws.readyState === WebSocket.OPEN), connectedAt: ws ? p.connectedAt : null, lastSeenAt: p.lastSeenAt };
+  }
+  return out;
+}
+
+module.exports = { attachAgentSocket, sendCommandToAgent, disconnectAgent, agentPresence };

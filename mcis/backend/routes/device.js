@@ -41,7 +41,14 @@ router.get('/list', async (req, res) => {
       .eq('user_id', userId);
 
     if (error) throw error;
-    res.json({ success: true, devices: data });
+    // Presence comes from this instance's live agent connections (heartbeat-checked).
+    let live = {};
+    try { live = require('../agentSocket').agentPresence(userId); } catch { live = {}; }
+    const devices = (data || []).map((d) => {
+      const p = live[d.device_id];
+      return { ...d, online: !!(p && p.online), connectedAt: p ? p.connectedAt : null, lastSeenAt: p ? p.lastSeenAt : null };
+    });
+    res.json({ success: true, devices });
   } catch (err) {
     logger.error(`Device list error: ${err.message}`);
     res.status(500).json({ success: false, error: 'Could not list devices' });

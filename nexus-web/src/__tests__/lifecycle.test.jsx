@@ -53,3 +53,20 @@ describe('task lifecycle', () => {
     expect(current.closest('li')).toHaveAttribute('aria-current', 'step');
   });
 });
+
+describe('paired devices show real presence', () => {
+  it('online and offline devices are labelled from the server presence fields', async () => {
+    const api = fakeApi([
+      ['GET', /^\/api\/workspaces$/, [WS_PERSONAL, WS_TEAM]],
+      ['GET', /\/security$/, { firewall: { enabled: true, policyVersion: 1, isDefault: true }, policy: { emergencyStop: false }, approvalPolicy: { maxRisk: 'red' }, blockedActions: [] }],
+      ['GET', /^\/api\/device\/list$/, { success: true, devices: [
+        { device_id: 'DESK-ON', created_at: '2026-10-01T00:00:00Z', online: true, lastSeenAt: new Date().toISOString() },
+        { device_id: 'DESK-OFF', created_at: '2026-10-01T00:00:00Z', online: false, lastSeenAt: null },
+      ] }],
+    ]);
+    renderApp({ api, path: '/settings' });
+    const on = await screen.findByText('DESK-ON');
+    expect(on.closest('tr')).toHaveTextContent('Online');
+    expect(screen.getByText('DESK-OFF').closest('tr')).toHaveTextContent('Offline');
+  });
+});

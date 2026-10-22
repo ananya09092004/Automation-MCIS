@@ -1,12 +1,12 @@
 import { useState } from 'react';
-import { Button, Card, Notice, PageHeader, Resource } from '../components/ui.jsx';
+import { Badge, Button, Card, Notice, PageHeader, Resource } from '../components/ui.jsx';
 import { useApi } from '../lib/apiContext.jsx';
 import { useWorkspace } from '../lib/workspace.jsx';
 import { useAuth } from '../lib/auth.jsx';
 import { useResource } from '../lib/useResource.js';
 import { useToast } from '../lib/toast.jsx';
 import { endpoints } from '../lib/endpoints.js';
-import { fmtDate, ROLE_LABEL } from '../lib/format.js';
+import { fmtDate, ROLE_LABEL, timeAgo } from '../lib/format.js';
 import SafetyControls from '../components/SafetyControls.jsx';
 import { Link } from '../lib/router.jsx';
 import { API_URL } from '../config.js';
@@ -63,17 +63,20 @@ function Devices() {
 
   return (
     <Card title="Paired desktop devices">
-      <p className="small muted">Computers running the Nexus desktop agent under your account. Revoking one invalidates its token immediately and closes its live connection.</p>
+      <p className="small muted">Computers running the Nexus desktop agent under your account. Online means its agent is connected to this server and answering heartbeats. Revoking one invalidates its token immediately and closes its live connection.</p>
       {error ? <Notice tone="danger">{error}</Notice> : null}
       <Resource res={res} loadingLabel="Loading devices…" errorTitle="Could not load devices">
         {(devices) => (devices.length ? (
           <div className="table-wrap" tabIndex={0} role="region" aria-label="Scrollable table">
             <table className="table">
-              <thead><tr><th>Device</th><th>Paired</th><th><span className="sr-only">Actions</span></th></tr></thead>
+              <thead><tr><th>Device</th><th>Status</th><th>Paired</th><th><span className="sr-only">Actions</span></th></tr></thead>
               <tbody>
                 {devices.map((d) => (
                   <tr key={d.device_id}>
                     <td className="mono small">{d.device_id}</td>
+                    <td>{d.online
+                      ? <><Badge status="connected">Online</Badge>{d.lastSeenAt ? <div className="small muted">heard {timeAgo(d.lastSeenAt)}</div> : null}</>
+                      : <><Badge status="disconnected">Offline</Badge>{d.lastSeenAt ? <div className="small muted">last seen {timeAgo(d.lastSeenAt)}</div> : null}</>}</td>
                     <td className="muted">{fmtDate(d.created_at)}</td>
                     <td className="right"><Button size="sm" variant="danger" busy={busy === d.device_id} onClick={() => revoke(d.device_id)}>Revoke</Button></td>
                   </tr>
