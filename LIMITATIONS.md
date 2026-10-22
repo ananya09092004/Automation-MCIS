@@ -5,8 +5,8 @@ Full ledger: `mcis/backend/docs/LAYER10_LEDGER.md` (58 closed, 11 need external 
 
 | Id | Limitation | Impact | Next step |
 |---|---|---|---|
-| F-R1 | `nexus/api_server.py` accepts unauthenticated requests if `NEXUS_DEVICE_TOKEN` is unset, binds `0.0.0.0:8000`, non-constant-time compare | **Blocks shipping the engine to customers** | Fail closed, bind `127.0.0.1`, `hmac.compare_digest` |
-| F-R2 | `nexus/requirements.txt` misses `python-dotenv`, `win10toast`; a test imports a non-existent module | Fresh installs / test runs fail | Add packages; fix the import |
+| F-R1 | ~~`nexus/api_server.py` fail-open~~ **Closed:** fails closed (503) without `NEXUS_DEVICE_TOKEN`, constant-time compare, binds `127.0.0.1` by default (`NEXUS_BIND_HOST`), refuses a network bind without a token; loopback-only dev switch `NEXUS_ALLOW_UNAUTHENTICATED_LOCAL` | — | Remote (cloud → desktop) execution still needs a secure tunnel to the engine |
+| F-R2 | `requirements.txt` gaps **fixed** (`python-dotenv`, `win10toast` on Windows); a test still imports a non-existent module | Test collection | Fix or remove that import |
 | F-R3 | `nexus/screen.png`, `nexus/desktop_test.png` are real desktop screenshots in the public repo | Privacy | Delete; optionally purge history |
 | F-R4 | Device tokens in plaintext; no global API rate limit; pairing endpoints unlimited | Defence in depth | Hash tokens; add limits after setting `trust proxy` |
 | F-R5 | Dependency advisories (backend 1 critical, CRA chain, firebase → grpc) | Supply chain | Planned major upgrades, not forced |

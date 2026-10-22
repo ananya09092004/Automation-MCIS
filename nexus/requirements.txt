@@ -23,3 +23,5 @@ uvicorn>=0.32
 pytest>=8.0
 keyboard>=0.13.5
 langdetect>=1.0.9
+python-dotenv>=1.0
+win10toast>=0.9; sys_platform == "win32"

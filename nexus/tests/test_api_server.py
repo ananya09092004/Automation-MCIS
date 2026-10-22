@@ -33,15 +33,29 @@ class _FakeGateway:
         return _FakeResult(platform=action["platform"], action=action["action"])
 
 
-def _fresh_client(monkeypatch):
-    """Reimport api_server with ExecutionGateway mocked, and return a
-    FastAPI TestClient for it."""
+TEST_TOKEN = "test-device-token-0123456789"
+AUTH = {"X-Device-Token": TEST_TOKEN}
+
+
+def _fresh_client(monkeypatch, token=TEST_TOKEN, env=None):
+    """Reimport api_server with ExecutionGateway mocked (and the given
+    environment), and return a FastAPI TestClient for it. Requests made
+    through the returned client carry the device token by default."""
     from fastapi.testclient import TestClient
 
+    for key in ("NEXUS_DEVICE_TOKEN", "NEXUS_ALLOW_UNAUTHENTICATED_LOCAL", "NEXUS_BIND_HOST"):
+        monkeypatch.delenv(key, raising=False)
+    if token is not None:
+        monkeypatch.setenv("NEXUS_DEVICE_TOKEN", token)
+    for key, value in (env or {}).items():
+        monkeypatch.setenv(key, value)
     monkeypatch.setattr(eg_module, "ExecutionGateway", _FakeGateway)
+    # load_dotenv() must not pull a developer's real nexus/.env into the tests.
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
     sys.modules.pop("api_server", None)
     import api_server
-    return TestClient(api_server.app), api_server.gateway
+    client = TestClient(api_server.app, headers=AUTH if token else {})
+    return client, api_server.gateway
 
 
 def test_health_endpoint(monkeypatch):
@@ -88,3 +102,49 @@ def test_execute_endpoint_rejects_missing_required_fields(monkeypatch):
     client, _ = _fresh_client(monkeypatch)
     response = client.post("/execute", json={"platform": "desktop"})  # missing "action"
     assert response.status_code == 422
+
+
+# --- device-token hardening (fail closed, constant-time, loopback by default) ---
+
+def test_missing_token_is_rejected(monkeypatch):
+    client, gateway = _fresh_client(monkeypatch)
+    response = client.post("/execute", json={"platform": "desktop", "action": "open_app"}, headers={"X-Device-Token": ""})
+    assert response.status_code == 401
+    assert gateway.calls == []
+
+
+def test_wrong_token_is_rejected_and_never_echoed(monkeypatch):
+    client, gateway = _fresh_client(monkeypatch)
+    response = client.post("/execute", json={"platform": "desktop", "action": "open_app"}, headers={"X-Device-Token": "wrong"})
+    assert response.status_code == 401
+    assert TEST_TOKEN not in response.text and "wrong" not in response.text
+    assert gateway.calls == []
+    assert client.get("/queue-status", headers={"X-Device-Token": "wrong"}).status_code == 401
+
+
+def test_no_configured_token_fails_closed(monkeypatch):
+    client, gateway = _fresh_client(monkeypatch, token=None)
+    response = client.post("/execute", json={"platform": "desktop", "action": "open_app"})
+    assert response.status_code == 503
+    assert gateway.calls == []
+    assert client.get("/queue-status").status_code == 503
+    assert client.get("/health").status_code == 200  # liveness stays public
+
+
+def test_local_dev_switch_only_works_on_loopback(monkeypatch):
+    client, gateway = _fresh_client(monkeypatch, token=None, env={"NEXUS_ALLOW_UNAUTHENTICATED_LOCAL": "true"})
+    assert client.post("/execute", json={"platform": "desktop", "action": "open_app"}).status_code == 200
+    client2, gateway2 = _fresh_client(monkeypatch, token=None, env={"NEXUS_ALLOW_UNAUTHENTICATED_LOCAL": "true", "NEXUS_BIND_HOST": "0.0.0.0"})
+    assert client2.post("/execute", json={"platform": "desktop", "action": "open_app"}).status_code == 503
+    assert gateway2.calls == []
+
+
+def test_defaults_to_loopback_and_refuses_network_bind_without_token(monkeypatch):
+    import pytest
+    _fresh_client(monkeypatch)
+    import api_server
+    assert api_server.NEXUS_BIND_HOST == "127.0.0.1"
+    with pytest.raises(SystemExit):
+        api_server.assert_safe_bind("0.0.0.0", None)
+    api_server.assert_safe_bind("0.0.0.0", TEST_TOKEN)  # allowed with a token
+    api_server.assert_safe_bind("127.0.0.1", None)       # allowed on loopback

@@ -167,4 +167,4 @@ cd nexus && py -m pip install -r requirements.txt python-dotenv && py -m pytest 
 **Desktop agent**: `MCIS_BACKEND_HTTP_URL`, `MCIS_FRONTEND_URL`, `VOSK_MODEL_PATH`,
 `MCIS_MIC_GAIN`, `MCIS_VAD_THRESHOLD`, `MCIS_AGENT_OWN_VOICE`.
 
-**Nexus engine**: `NEXUS_DEVICE_TOKEN`, `NEXUS_VOICE_DEVICE_TOKEN`, `MCIS_BACKEND_HTTP_URL`, `GROQ_API_KEY`.
+**Nexus engine**: `NEXUS_DEVICE_TOKEN` (required — action endpoints return 503 without it), `NEXUS_BIND_HOST` (default `127.0.0.1`), `NEXUS_PORT` (default 8000), `NEXUS_ALLOW_UNAUTHENTICATED_LOCAL` (loopback-only development switch), `NEXUS_VOICE_DEVICE_TOKEN`, `MCIS_BACKEND_HTTP_URL`, `GROQ_API_KEY`.
