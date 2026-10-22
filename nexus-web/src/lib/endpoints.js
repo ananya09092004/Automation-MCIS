@@ -58,6 +58,7 @@ export const endpoints = {
   // Integrations (Layer 5)
   listIntegrations: (api, w) => api.request(`${ws(w)}/integrations`),
   createIntegration: (api, w, body) => post(api, `${ws(w)}/integrations`, body),
+  updateIntegrationPermissions: (api, w, id, actions) => api.request(`${ws(w)}/integrations/${enc(id)}/permissions`, { method: 'PUT', body: { actions } }),
   updateIntegration: (api, w, id, body) => api.request(`${ws(w)}/integrations/${enc(id)}`, { method: 'PATCH', body }),
 
   // Product monitoring (Layer 10) — the data behind Compare

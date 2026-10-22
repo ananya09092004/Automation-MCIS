@@ -110,3 +110,43 @@ describe('Insights', () => {
     expect(a.calls.some((c) => c.path.endsWith('days=90'))).toBe(true);
   });
 });
+
+describe('integrations show and control exactly what agents may do', () => {
+  const slack = { id: 'i1', name: 'Team Slack', provider: 'slack', providerName: 'Slack', status: 'connected', hasCredential: true, lastUsedAt: null, lastCheckedAt: null, lastError: null,
+    actions: [
+      { name: 'notify', label: 'Send a notification', available: true, enabled: true, readOnly: false, effectiveTier: 'green', requiresApproval: false, requiresAdminApproval: false },
+      { name: 'post_message', label: 'Post a message', available: true, enabled: false, readOnly: false, effectiveTier: 'yellow', requiresApproval: true, requiresAdminApproval: false },
+    ] };
+  const routes = (role = 'owner', extra = []) => fakeApi([
+    ...extra,
+    ['GET', /^\/api\/workspaces$/, [WS_PERSONAL, { ...WS_TEAM, role }]],
+    ['GET', new RegExp(`^${W}/integrations$`), [slack, { ...slack, id: 'i2', name: 'Old GitHub', providerName: 'GitHub', status: 'revoked', actions: [] }]],
+  ]);
+
+  it('lists each action with its risk, and labels server states honestly', async () => {
+    renderApp({ api: routes(), path: '/integrations' });
+    expect(await screen.findByText('Send a notification')).toBeInTheDocument();
+    expect(screen.getByText('Access revoked — reconnect')).toBeInTheDocument();
+    expect(screen.getByText(/1 of 2 allowed/)).toBeInTheDocument();
+    expect(screen.getByRole('switch', { name: 'Post a message allowed' })).toHaveAttribute('aria-checked', 'false');
+  });
+
+  it('enabling a data-changing action asks first, then updates permissions on the server', async () => {
+    const api = routes('owner', [['PUT', new RegExp(`^${W}/integrations/i1/permissions$`), slack]]);
+    renderApp({ api, path: '/integrations' });
+    window.confirm = () => false;
+    fireEvent.click(await screen.findByRole('switch', { name: 'Post a message allowed' }));
+    expect(api.calls.some((c) => c.method === 'PUT')).toBe(false);
+    window.confirm = () => true;
+    fireEvent.click(screen.getByRole('switch', { name: 'Post a message allowed' }));
+    await waitFor(() => expect(api.calls.find((c) => c.method === 'PUT').body).toEqual({ actions: { post_message: { enabled: true } } }));
+    delete window.confirm;
+  });
+
+  it('members see permissions but cannot change them', async () => {
+    renderApp({ api: routes('member'), path: '/integrations' });
+    expect(await screen.findByText('Send a notification')).toBeInTheDocument();
+    expect(screen.queryByRole('switch')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Check health' })).not.toBeInTheDocument();
+  });
+});
