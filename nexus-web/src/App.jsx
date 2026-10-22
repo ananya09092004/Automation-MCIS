@@ -18,6 +18,7 @@ import Settings from './pages/Settings.jsx';
 import Security from './pages/Security.jsx';
 import Compare from './pages/Compare.jsx';
 import Insights from './pages/Insights.jsx';
+import Welcome from './pages/Welcome.jsx';
 import JoinWorkspace from './pages/JoinWorkspace.jsx';
 import SignIn from './pages/SignIn.jsx';
 import NotFound from './pages/NotFound.jsx';
@@ -25,7 +26,7 @@ import NotFound from './pages/NotFound.jsx';
 const ROUTES = [
   ['/', Dashboard], ['/agents', Agents], ['/tasks', Tasks], ['/tasks/:id', TaskDetail], ['/workflows', Workflows],
   ['/approvals', Approvals], ['/integrations', Integrations], ['/activity', Activity], ['/billing', Billing],
-  ['/team', Team], ['/settings', Settings], ['/security', Security], ['/workspace', JoinWorkspace], ['/compare', Compare], ['/insights', Insights],
+  ['/team', Team], ['/settings', Settings], ['/security', Security], ['/workspace', JoinWorkspace], ['/compare', Compare], ['/insights', Insights], ['/welcome', Welcome],
 ];
 
 function Page() {

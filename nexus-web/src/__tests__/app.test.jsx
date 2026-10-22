@@ -189,9 +189,12 @@ describe('roles and workspace isolation', () => {
     const before = api.calls.length;
     fireEvent.change(screen.getByLabelText('Workspace'), { target: { value: WS_PERSONAL.id } });
     await waitFor(() => expect(within(screen.getByTestId('stat-succeeded')).getByText('5')).toBeInTheDocument());
-    const after = api.calls.slice(before).filter((c) => c.path !== '/api/workspaces');
+    const ACCOUNT_LEVEL = ['/api/workspaces', '/api/onboarding']; // the caller's own account, not workspace data
+    const all = api.calls.slice(before);
+    const after = all.filter((c) => !ACCOUNT_LEVEL.includes(c.path));
     expect(after.length).toBeGreaterThan(0);
     expect(after.every((c) => c.path.startsWith(P))).toBe(true);
+    expect(all.some((c) => c.path.startsWith(W))).toBe(false); // nothing from the previous workspace
     expect(window.localStorage.getItem('nexus.workspace.uid_alice')).toBe(WS_PERSONAL.id);
   });
 

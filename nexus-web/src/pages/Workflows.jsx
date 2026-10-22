@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Badge, Button, Card, EmptyState, Loading, Modal, Notice, PageHeader, Resource } from '../components/ui.jsx';
 import { useApi } from '../lib/apiContext.jsx';
+import VariableInputs, { collectInputs } from '../components/VariableInputs.jsx';
 import { useWorkspace } from '../lib/workspace.jsx';
 import { useResource } from '../lib/useResource.js';
 import { useToast } from '../lib/toast.jsx';
@@ -94,23 +95,10 @@ function RunWorkflow({ workflow, onClose, onStarted }) {
   const [busy, setBusy] = useState(false);
   const [key] = useState(newIdempotencyKey);
 
-  function coerce(v, raw) {
-    if (raw === undefined || raw === '') return undefined;
-    if (v.type === 'number') return Number(raw);
-    if (v.type === 'boolean') return raw === true || raw === 'true';
-    return raw;
-  }
-
   async function submit(e) {
     e.preventDefault();
-    const vars = (def.data && def.data.variables) || [];
-    const inputs = {};
-    for (const v of vars) {
-      const val = coerce(v, values[v.name] !== undefined ? values[v.name] : v.default);
-      if (val === undefined) { if (v.required) { setError(`${v.label || v.name} is required.`); return; } continue; }
-      if (v.type === 'number' && !Number.isFinite(val)) { setError(`${v.label || v.name} must be a number.`); return; }
-      inputs[v.name] = val;
-    }
+    const { inputs, error: invalid } = collectInputs((def.data && def.data.variables) || [], values);
+    if (invalid) { setError(invalid); return; }
     setBusy(true);
     setError(null);
     try {
@@ -128,28 +116,7 @@ function RunWorkflow({ workflow, onClose, onStarted }) {
       {def.loading ? <Loading label="Loading inputs…" /> : def.error ? <Notice tone="danger">{def.error.message}</Notice> : (
         <form onSubmit={submit} noValidate>
           {(def.data.variables || []).length === 0 ? <p className="muted">This workflow takes no inputs.</p> : null}
-          {(def.data.variables || []).map((v) => (
-            <label key={v.name} className="field">
-              <span>{v.label || humanize(v.name)}{v.required ? ' *' : ''}</span>
-              {v.type === 'enum' ? (
-                <select value={values[v.name] ?? v.default ?? ''} onChange={(e) => setValues((x) => ({ ...x, [v.name]: e.target.value }))}>
-                  <option value="">Select…</option>
-                  {(v.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
-                </select>
-              ) : v.type === 'boolean' ? (
-                <select value={String(values[v.name] ?? v.default ?? '')} onChange={(e) => setValues((x) => ({ ...x, [v.name]: e.target.value }))}>
-                  <option value="">Select…</option><option value="true">Yes</option><option value="false">No</option>
-                </select>
-              ) : (
-                <input
-                  type={v.type === 'number' ? 'number' : v.type === 'date' ? 'date' : 'text'}
-                  value={values[v.name] ?? v.default ?? ''}
-                  maxLength={v.maxLength || 500}
-                  onChange={(e) => setValues((x) => ({ ...x, [v.name]: e.target.value }))}
-                />
-              )}
-            </label>
-          ))}
+          <VariableInputs vars={def.data.variables} values={values} setValues={setValues} />
           {error ? <Notice tone="danger">{error}</Notice> : null}
           <div className="modal-foot inline">
             <Button onClick={onClose}>Cancel</Button>

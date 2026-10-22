@@ -18,6 +18,17 @@ export const endpoints = {
   createInvitation: (api, w, email, role) => post(api, `${ws(w)}/invitations`, { email, role }),
   revokeInvitation: (api, w, id) => api.request(`${ws(w)}/invitations/${enc(id)}`, { method: 'DELETE' }),
 
+  // Onboarding (Layer 8) — account-level, resumable, idempotent on the server
+  onboarding: (api) => api.request('/api/onboarding'),
+  onboardingStart: (api) => post(api, '/api/onboarding/start'),
+  onboardingWorkspace: (api, body) => post(api, '/api/onboarding/workspace', body),
+  onboardingTeam: (api, body) => post(api, '/api/onboarding/team', body),
+  onboardingUseCase: (api, useCase) => post(api, '/api/onboarding/use-case', { useCase }),
+  onboardingTemplate: (api, templateId) => post(api, '/api/onboarding/template', { templateId }),
+  onboardingFirstRun: (api, inputs) => post(api, '/api/onboarding/first-run', { inputs }),
+  onboardingComplete: (api) => post(api, '/api/onboarding/complete'),
+  listTemplates: (api, w, useCase) => api.request(`${ws(w)}/templates${useCase ? `?useCase=${enc(useCase)}` : ''}`),
+
   // Overview (Layer 8) — the dashboard's single aggregate
   overview: (api, w) => api.request(`${ws(w)}/overview`),
 

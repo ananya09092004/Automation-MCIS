@@ -13,11 +13,12 @@ const RUNNING = ['created', 'planning', 'executing', 'verifying'];
 
 /** Agents are an optional module (REVENUE_SUITE_ENABLED); absent → null, not an error. */
 async function loadDashboard(api, ws) {
-  const [overview, agents] = await Promise.all([
+  const [overview, agents, onboarding] = await Promise.all([
     endpoints.overview(api, ws),
     endpoints.listAgents(api, ws).catch((err) => (err.status === 404 || err.status === 503 ? null : Promise.reject(err))),
+    endpoints.onboarding(api).catch(() => null), // optional module; never blocks the dashboard
   ]);
-  return { overview, agents };
+  return { overview, agents, onboarding };
 }
 
 export default function Dashboard() {
@@ -43,7 +44,8 @@ export default function Dashboard() {
 }
 
 function DashboardBody({ data, onAsk }) {
-  const { overview: o, agents } = data;
+  const { overview: o, agents, onboarding: ob } = data;
+  const setup = ob && ob.enabled !== false && !ob.completed && (ob.required || ob.started);
   const ex = o.executions || { byStatus: {}, recent: [] };
   const runs = o.workflowRuns || { byStatus: {} };
   const running = RUNNING.reduce((n, s) => n + (ex.byStatus[s] || 0), 0) + (runs.byStatus.running || 0);
@@ -66,6 +68,17 @@ function DashboardBody({ data, onAsk }) {
           <Link to="/integrations" className="hero-pill"><Dot tone={connectors.needsAttention ? 'warning' : connectors.connected ? 'success' : 'neutral'} />{fmtNumber(connectors.connected)}/{fmtNumber(connectors.total)} integrations</Link>
         </div>
       </section>
+
+      {setup ? (
+        <Card className="callout setup-callout">
+          <span className="callout-icon" aria-hidden="true" style={{ background: 'var(--primary-soft)', color: 'var(--primary)' }}><Icon name="spark" size={18} /></span>
+          <div className="grow">
+            <div className="strong">{ob.started ? 'Finish setting up Nexus' : 'Set up Nexus in about three minutes'}</div>
+            <div className="small muted">Create your workspace, invite your team and run a first workflow — with approvals and evidence switched on.</div>
+          </div>
+          <Link to="/welcome" className="btn btn-primary">{ob.started ? 'Continue setup' : 'Get started'}</Link>
+        </Card>
+      ) : null}
 
       {waiting ? (
         <Card className="callout card-warning">
